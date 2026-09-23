@@ -1,3 +1,20 @@
-from app.schemas.models import Context, LOBEnum, RoleEnum
+from app.schemas.models import (
+    ConsensusRequest,
+    ConsensusResponse,
+    Context,
+    LOBEnum,
+    ProviderResult,
+    RoleEnum,
+    Telemetry,
+)
 
-__all__ = ["Context", "LOBEnum", "RoleEnum"]
+__all__ = [
+    "ConsensusRequest",
+    "ConsensusResponse",
+    "Context",
+    "LOBEnum",
+    "ProviderResult",
+    "RoleEnum",
+    "Telemetry",
+]
+
