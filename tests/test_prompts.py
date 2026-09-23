@@ -1,6 +1,11 @@
 import unittest
 
-from app.core.prompts import ROLE_PROMPTS, get_role_prompt
+from app.core.prompts import (
+    LOB_CONTEXT,
+    ROLE_PROMPTS,
+    build_system_prompt,
+    get_role_prompt,
+)
 from app.schemas.models import LOBEnum, RoleEnum
 
 
@@ -58,6 +63,20 @@ class TestRolePrompts(unittest.TestCase):
             ),
         )
 
+    def test_lob_context_contains_all_expected_lobs(self):
+        """Verify LOB_CONTEXT defines all 6 lines of business specified in spec section 4.1."""
+        expected_lobs = {
+            "personal_auto": "personal auto insurance",
+            "homeowners": "homeowners insurance",
+            "umbrella": "umbrella insurance",
+            "commercial_auto": "commercial auto insurance",
+            "commercial_pnc": "commercial property and general liability insurance",
+            "aca_health": "ACA and health insurance",
+        }
+        self.assertEqual(set(LOB_CONTEXT.keys()), set(expected_lobs.keys()))
+        for lob, expected_phrase in expected_lobs.items():
+            self.assertEqual(LOB_CONTEXT[lob], expected_phrase)
+
     def test_claims_adjuster_state_substitution(self):
         """Verify get_role_prompt substitutes {state} in claims_adjuster prompt."""
         result = get_role_prompt(
@@ -65,25 +84,35 @@ class TestRolePrompts(unittest.TestCase):
         )
         self.assertIn("in MT.", result)
         self.assertNotIn("{state}", result)
+        self.assertIn("Line of business: homeowners insurance.", result)
+
+    def test_claims_adjuster_without_lob(self):
+        """Verify get_role_prompt without LOB returns the verbatim template with state substituted."""
+        result = get_role_prompt("claims_adjuster", state="MT")
         expected = (
             "You are a Property & Casualty claims adjuster analyzing coverage triggers, exclusions, "
             "reservation of rights considerations, proof of loss, and claim workflows in MT."
         )
         self.assertEqual(result, expected)
 
-    def test_layman_linguist_unchanged(self):
-        """Verify get_role_prompt returns layman_linguist prompt unchanged."""
-        result = get_role_prompt(
-            "layman_linguist", state="MT", line_of_business="homeowners"
-        )
+    def test_layman_linguist_unchanged_when_no_lob(self):
+        """Verify get_role_prompt returns layman_linguist prompt unchanged when no LOB is supplied."""
+        result = get_role_prompt("layman_linguist", state="MT")
         self.assertEqual(result, ROLE_PROMPTS["layman_linguist"])
         self.assertNotIn("{state}", result)
 
-    def test_client_communications_unchanged(self):
-        """Verify get_role_prompt returns client_communications prompt unchanged."""
+    def test_layman_linguist_with_lob(self):
+        """Verify layman_linguist includes LOB context when supplied."""
         result = get_role_prompt(
-            "client_communications", state="FL", line_of_business="commercial_pnc"
+            "layman_linguist", state="MT", line_of_business="homeowners"
         )
+        self.assertIn(ROLE_PROMPTS["layman_linguist"], result)
+        self.assertIn("Line of business: homeowners insurance.", result)
+        self.assertNotIn("{state}", result)
+
+    def test_client_communications_unchanged_when_no_lob(self):
+        """Verify get_role_prompt returns client_communications prompt unchanged without LOB."""
+        result = get_role_prompt("client_communications", state="FL")
         self.assertEqual(result, ROLE_PROMPTS["client_communications"])
         self.assertNotIn("{state}", result)
 
@@ -94,6 +123,7 @@ class TestRolePrompts(unittest.TestCase):
         )
         self.assertIn("in CA.", result)
         self.assertNotIn("{state}", result)
+        self.assertIn("Line of business: commercial property and general liability insurance.", result)
 
     def test_aca_expert_custom_state_substitution(self):
         """Verify get_role_prompt substitutes custom state in aca_expert prompt."""
@@ -102,6 +132,7 @@ class TestRolePrompts(unittest.TestCase):
         )
         self.assertIn("in TX.", result)
         self.assertNotIn("{state}", result)
+        self.assertIn("Line of business: ACA and health insurance.", result)
 
     def test_default_state_is_mt(self):
         """Verify default state fallback is 'MT' when omitted or None."""
@@ -110,6 +141,9 @@ class TestRolePrompts(unittest.TestCase):
 
         result_none = get_role_prompt("underwriter", state=None)
         self.assertIn("in MT.", result_none)
+
+        result_whitespace = get_role_prompt("underwriter", state="   ")
+        self.assertIn("in MT.", result_whitespace)
 
     def test_invoking_with_enum_members(self):
         """Verify RoleEnum and LOBEnum can be passed directly."""
@@ -120,6 +154,7 @@ class TestRolePrompts(unittest.TestCase):
         )
         self.assertIn("in MT.", result)
         self.assertNotIn("{state}", result)
+        self.assertIn("Line of business: homeowners insurance.", result)
 
     def test_all_supported_roles_render_cleanly(self):
         """Verify every supported role renders without leftover placeholders."""
@@ -137,6 +172,14 @@ class TestRolePrompts(unittest.TestCase):
         self.assertIn("Invalid role 'invalid_role'", error_msg)
         self.assertIn("claims_adjuster", error_msg)
 
+    def test_invalid_lob_raises_value_error(self):
+        """Verify calling with an invalid line_of_business raises ValueError."""
+        with self.assertRaises(ValueError) as cm:
+            get_role_prompt("underwriter", state="MT", line_of_business="pet_insurance")
+        error_msg = str(cm.exception)
+        self.assertIn("Invalid line of business 'pet_insurance'", error_msg)
+        self.assertIn("homeowners", error_msg)
+
     def test_purity_and_idempotency(self):
         """Verify get_role_prompt has no side effects and produces identical results on repeated calls."""
         res1 = get_role_prompt("claims_adjuster", state="NY")
@@ -146,5 +189,69 @@ class TestRolePrompts(unittest.TestCase):
         self.assertIn("{state}", ROLE_PROMPTS["claims_adjuster"])
 
 
+class TestBuildSystemPrompt(unittest.TestCase):
+    """Unit tests specifically covering the build_system_prompt API and acceptance criteria."""
+
+    def test_acceptance_criteria_claims_adjuster_mt(self):
+        """Acceptance Criteria: build_system_prompt('claims_adjuster', 'homeowners', 'MT')
+
+        Returns non-empty string with 'MT' present.
+        """
+        output = build_system_prompt("claims_adjuster", "homeowners", "MT")
+        self.assertIsInstance(output, str)
+        self.assertGreater(len(output), 0)
+        self.assertIn("MT", output)
+        self.assertIn("homeowners insurance", output)
+
+    def test_acceptance_criteria_claims_adjuster_none_state_fallback(self):
+        """Acceptance Criteria: build_system_prompt('claims_adjuster', 'homeowners', None)
+
+        Falls back to 'MT' without raising an error.
+        """
+        output = build_system_prompt("claims_adjuster", "homeowners", None)
+        self.assertIsInstance(output, str)
+        self.assertIn("in MT.", output)
+        self.assertNotIn("{state}", output)
+        self.assertIn("Line of business: homeowners insurance.", output)
+
+    def test_acceptance_criteria_layman_linguist_tx(self):
+        """Acceptance Criteria: build_system_prompt('layman_linguist', 'personal_auto', 'TX')
+
+        Returns a valid string.
+        """
+        output = build_system_prompt("layman_linguist", "personal_auto", "TX")
+        self.assertIsInstance(output, str)
+        self.assertIn(ROLE_PROMPTS["layman_linguist"], output)
+        self.assertIn("Line of business: personal auto insurance.", output)
+
+    def test_build_system_prompt_pure_and_deterministic(self):
+        """Acceptance Criteria: Function is pure - no I/O, no side effects, deterministic output."""
+        res1 = build_system_prompt("underwriter", "commercial_pnc", "IL")
+        res2 = build_system_prompt("underwriter", "commercial_pnc", "IL")
+        self.assertEqual(res1, res2)
+        self.assertIn("in IL.", res1)
+        self.assertIn("commercial property and general liability insurance", res1)
+
+    def test_build_system_prompt_with_enum_arguments(self):
+        """Verify build_system_prompt works identically with RoleEnum and LOBEnum."""
+        res_str = build_system_prompt("underwriter", "commercial_auto", "FL")
+        res_enum = build_system_prompt(RoleEnum.underwriter, LOBEnum.commercial_auto, "FL")
+        self.assertEqual(res_str, res_enum)
+
+    def test_build_system_prompt_without_lob_or_state(self):
+        """Verify default arguments: LOB is optional, state defaults to MT."""
+        output = build_system_prompt("underwriter")
+        self.assertIn("in MT.", output)
+        self.assertNotIn("Line of business:", output)
+
+    def test_build_system_prompt_empty_state_fallback(self):
+        """Verify empty and whitespace strings fallback to MT."""
+        output_empty = build_system_prompt("claims_adjuster", "umbrella", "")
+        self.assertIn("in MT.", output_empty)
+        output_ws = build_system_prompt("claims_adjuster", "umbrella", "   ")
+        self.assertIn("in MT.", output_ws)
+
+
 if __name__ == "__main__":
     unittest.main()
+
