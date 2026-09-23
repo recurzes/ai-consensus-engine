@@ -100,3 +100,69 @@ Use `litellm` as a single gateway for calling all providers through an OpenAI-co
      ```
 3. **Phase 0 Scope Constraint:**
    - No code is added to `app/services/` in this branch. Service implementation begins in Phase 3.
+
+---
+
+## ADR 002: Line of Business (LOB) Context Handling in System Prompts
+
+- **Date:** 2026-09-24
+- **Status:** Accepted
+- **Phase:** 2 — Prompt Engine (`feat/prompts-lob-and-state-handling`)
+- **Deciders:** Engineering Team
+
+---
+
+### Context & Problem Statement
+
+Spec section 4.1 outlines five core insurance personas (`layman_linguist`, `underwriter`, `claims_adjuster`, `client_communications`, `aca_expert`) and six lines of business (`personal_auto`, `homeowners`, `umbrella`, `commercial_auto`, `commercial_pnc`, `aca_health`).
+
+While the persona templates in spec section 4.1 explicitly define `{state}` placeholders for jurisdiction-dependent roles, they do not include a `{line_of_business}` token in their verbatim strings. Meanwhile, the Arbiter system prompt (Phase 2, spec section 4.4) explicitly receives `{line_of_business}` in its header directive.
+
+We must resolve how the active line of business participates in worker system prompts (the "LOB ambiguity") and how jurisdiction defaults are guarded defensively.
+
+---
+
+### Options Evaluated
+
+#### Option A: `LOB_CONTEXT` Dictionary with Context Appending / Interpolation (Chosen)
+Maintain a `LOB_CONTEXT: dict[str, str]` dictionary in `app/core/prompts.py` mapping each supported LOB to a descriptive phrase (e.g. `"homeowners": "homeowners insurance"`).
+- If a role prompt template contains a `{line_of_business}` placeholder, interpolate the LOB descriptive phrase.
+- If the template does not contain `{line_of_business}` (verbatim spec templates) and an LOB is provided, append `\n\nLine of business: <lob_phrase>.` to provide worker models with domain boundary constraints.
+- If `line_of_business` is omitted or `None`, no LOB clause is appended.
+
+- **Pros:**
+  - Workers receive explicit domain grounding, preventing an underwriter or claims adjuster from assuming commercial terms when evaluating a homeowners query.
+  - Directly satisfies checklist item 2 of Phase 10 (`31-chore-final-acceptance-review.md`): *"Prompt dictionary (`app/core/prompts.py`): All 5 roles, all 6 LOBs, state handling present"*.
+  - Safe fallback when LOB is not supplied.
+
+- **Cons:**
+  - Appends a single sentence to worker system prompts when an LOB is present.
+
+#### Option B: Data-Only LOB for Arbiter Only
+Treat LOB as purely metadata passed to the Arbiter, leaving worker system prompts entirely unaware of the line of business unless mentioned in the user query.
+
+- **Pros:**
+  - Keeps worker role prompts strictly identical to the verbatim strings in spec section 4.1.
+
+- **Cons:**
+  - Worker LLMs risk interpreting domain-specific queries under the wrong LOB if the user prompt lacks explicit framing.
+  - Does not satisfy the presence of all 6 LOBs in `app/core/prompts.py` required by the final acceptance checklist.
+
+---
+
+### Decision
+
+**Adopt Option A.**
+
+In addition:
+1. **Defensive State Handling:** `build_system_prompt()` enforces a fallback to `"MT"` (Montana) if `state` is `None`, empty, or whitespace-only. This serves as a secondary line of defense behind Pydantic schema validation.
+2. **Function Signature:** Standardize `build_system_prompt(role, line_of_business=None, state="MT") -> str` as a pure, deterministic function. Maintain `get_role_prompt(role, state="MT", line_of_business=None)` for backwards compatibility.
+
+---
+
+### Consequences
+
+- `app/core/prompts.py` exposes `ROLE_PROMPTS`, `LOB_CONTEXT`, `build_system_prompt`, and `get_role_prompt`.
+- Calling `build_system_prompt("claims_adjuster", "homeowners", "MT")` yields a non-empty system prompt with `"MT"` and `"homeowners insurance"`.
+- Calling `build_system_prompt("claims_adjuster", "homeowners", None)` falls back to `"MT"` cleanly.
+
