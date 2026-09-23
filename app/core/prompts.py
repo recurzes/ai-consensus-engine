@@ -36,6 +36,16 @@ LOB_CONTEXT: dict[str, str] = {
     "aca_health": "ACA and health insurance",
 }
 
+ARBITER_SYSTEM_PROMPT: str = (
+    "You are an expert executive AI insurance arbiter and fact-checker. You are given an original insurance query, "
+    "the active professional persona ({role}, {line_of_business}, {state}), and answers from multiple independent AI models. "
+    "Your task is to:\n"
+    "1. Identify common ground and core facts agreed upon by the models.\n"
+    "2. Detect and reconcile conflicting statements, eliminating obvious hallucinations, incorrect policy terms, or statutory inaccuracies.\n"
+    "3. Synthesize the most accurate, structured, and clear response possible matching the requested persona.\n"
+    "4. Maintain a professional, definitive tone. Do NOT mention 'Model A said' or cite specific AI names in your final output unless there is an unresolvable contradiction that the user must be alerted to."
+)
+
 
 class _SafeFormatDict(dict[str, Any]):
     """Dictionary that preserves placeholder syntax for any missing format keys."""
@@ -146,9 +156,64 @@ def get_role_prompt(
     )
 
 
+def build_arbiter_prompt(
+    role: str | RoleEnum,
+    line_of_business: str | LOBEnum,
+    state: str | None = "MT",
+) -> str:
+    """Build and format the system directive for the Arbiter model.
+
+    The Arbiter reconciles multiple AI worker responses into an authoritative consensus.
+    This helper interpolates the active persona ({role}, {line_of_business}, {state})
+    into the ARBITER_SYSTEM_PROMPT template.
+
+    Args:
+        role: The active professional persona (str or RoleEnum).
+        line_of_business: The active line of business (str or LOBEnum).
+        state: US state jurisdiction (str, defaults to 'MT').
+
+    Returns:
+        The fully formatted Arbiter system prompt string.
+
+    Raises:
+        ValueError: If role or line_of_business is not recognized.
+    """
+    role_key = role.value if hasattr(role, "value") else str(role)
+    if role_key not in ROLE_PROMPTS:
+        valid_roles = ", ".join(repr(r) for r in ROLE_PROMPTS.keys())
+        raise ValueError(
+            f"Invalid role '{role}'. Supported roles are: {valid_roles}."
+        )
+
+    lob_key = (
+        line_of_business.value
+        if hasattr(line_of_business, "value")
+        else str(line_of_business)
+    )
+    if lob_key not in LOB_CONTEXT:
+        valid_lobs = ", ".join(repr(k) for k in LOB_CONTEXT.keys())
+        raise ValueError(
+            f"Invalid line of business '{line_of_business}'. Supported lines of business are: {valid_lobs}."
+        )
+
+    if state is None or not str(state).strip():
+        resolved_state = "MT"
+    else:
+        resolved_state = str(state).strip()
+
+    return ARBITER_SYSTEM_PROMPT.format(
+        role=role_key,
+        line_of_business=lob_key,
+        state=resolved_state,
+    )
+
+
 __all__ = [
+    "ARBITER_SYSTEM_PROMPT",
     "LOB_CONTEXT",
     "ROLE_PROMPTS",
+    "build_arbiter_prompt",
     "build_system_prompt",
     "get_role_prompt",
 ]
+

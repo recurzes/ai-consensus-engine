@@ -166,3 +166,40 @@ In addition:
 - Calling `build_system_prompt("claims_adjuster", "homeowners", "MT")` yields a non-empty system prompt with `"MT"` and `"homeowners insurance"`.
 - Calling `build_system_prompt("claims_adjuster", "homeowners", None)` falls back to `"MT"` cleanly.
 
+---
+
+## ADR 003: Arbiter Prompt Template and Synthesis System Prompt Design
+
+- **Date:** 2026-09-24
+- **Status:** Accepted
+- **Phase:** 2 — Prompt Engine (`feat/prompts-arbiter-template`)
+- **Deciders:** Engineering Team
+
+---
+
+### Context & Problem Statement
+
+The synthesis Arbiter model (executed by Gemini 2.5 Pro or GPT-4o in Phase 6) serves a distinct operational purpose from worker models:
+1. Worker models answer an end-user query under an individual insurance persona.
+2. The Arbiter synthesizes answers from multiple independent worker models into a unified consensus, detecting hallucinations, reconciling conflicts, and matching the requested persona.
+
+The Arbiter system directive requires injecting `{role}`, `{line_of_business}`, and `{state}` into a fixed 4-step reconciliation prompt (spec section 4.4). We need a clear structural abstraction for this prompt.
+
+---
+
+### Decision
+
+1. **Module Constant & Builder Separation:** Define `ARBITER_SYSTEM_PROMPT` as a raw template string constant in `app/core/prompts.py` and provide `build_arbiter_prompt(role, line_of_business, state="MT") -> str` as the formatting entrypoint.
+2. **Distinct from Worker Prompt Engine:** Maintain `build_arbiter_prompt()` strictly separate from `build_system_prompt()`. Worker prompts append domain boundary clauses; the Arbiter prompt interpolates persona variables directly into its header directive.
+3. **Type Flexibility & Validation:** `build_arbiter_prompt()` supports both string literals and `RoleEnum` / `LOBEnum` members, validating against `ROLE_PROMPTS` and `LOB_CONTEXT` keys with clear `ValueError` feedback.
+4. **Defensive Jurisdiction Fallback:** If `state` is `None`, empty, or whitespace, default to `"MT"`, consistent with ADR 002.
+
+---
+
+### Consequences
+
+- `app/core/prompts.py` and `app/core` export `ARBITER_SYSTEM_PROMPT` and `build_arbiter_prompt`.
+- Downstream synthesis service (`app/services/arbiter.py` in Phase 6) can directly call `build_arbiter_prompt(context.role, context.line_of_business, context.state)`.
+- Pure, deterministic, side-effect-free implementation that is easily testable and inspectable.
+
+

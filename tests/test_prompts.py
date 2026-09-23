@@ -1,8 +1,10 @@
 import unittest
 
 from app.core.prompts import (
+    ARBITER_SYSTEM_PROMPT,
     LOB_CONTEXT,
     ROLE_PROMPTS,
+    build_arbiter_prompt,
     build_system_prompt,
     get_role_prompt,
 )
@@ -252,6 +254,106 @@ class TestBuildSystemPrompt(unittest.TestCase):
         self.assertIn("in MT.", output_ws)
 
 
+class TestArbiterPrompt(unittest.TestCase):
+    """Unit tests for the Arbiter system prompt template and build_arbiter_prompt."""
+
+    def test_arbiter_system_prompt_constant_and_placeholders(self):
+        """Verify ARBITER_SYSTEM_PROMPT is defined and contains required placeholders."""
+        self.assertIsInstance(ARBITER_SYSTEM_PROMPT, str)
+        self.assertIn("{role}", ARBITER_SYSTEM_PROMPT)
+        self.assertIn("{line_of_business}", ARBITER_SYSTEM_PROMPT)
+        self.assertIn("{state}", ARBITER_SYSTEM_PROMPT)
+
+    def test_arbiter_system_prompt_verbatim_content(self):
+        """Verify ARBITER_SYSTEM_PROMPT verbatim content matches spec section 4.4."""
+        expected = (
+            "You are an expert executive AI insurance arbiter and fact-checker. You are given an original insurance query, "
+            "the active professional persona ({role}, {line_of_business}, {state}), and answers from multiple independent AI models. "
+            "Your task is to:\n"
+            "1. Identify common ground and core facts agreed upon by the models.\n"
+            "2. Detect and reconcile conflicting statements, eliminating obvious hallucinations, incorrect policy terms, or statutory inaccuracies.\n"
+            "3. Synthesize the most accurate, structured, and clear response possible matching the requested persona.\n"
+            "4. Maintain a professional, definitive tone. Do NOT mention 'Model A said' or cite specific AI names in your final output unless there is an unresolvable contradiction that the user must be alerted to."
+        )
+        self.assertEqual(ARBITER_SYSTEM_PROMPT, expected)
+
+    def test_build_arbiter_prompt_acceptance_criteria(self):
+        """Acceptance Criteria: build_arbiter_prompt('claims_adjuster', 'homeowners', 'MT')
+
+        Returns the full arbiter prompt with 'claims_adjuster', 'homeowners', and 'MT'
+        substituted in for {role}, {line_of_business}, and {state} respectively.
+        """
+        result = build_arbiter_prompt("claims_adjuster", "homeowners", "MT")
+        expected = (
+            "You are an expert executive AI insurance arbiter and fact-checker. You are given an original insurance query, "
+            "the active professional persona (claims_adjuster, homeowners, MT), and answers from multiple independent AI models. "
+            "Your task is to:\n"
+            "1. Identify common ground and core facts agreed upon by the models.\n"
+            "2. Detect and reconcile conflicting statements, eliminating obvious hallucinations, incorrect policy terms, or statutory inaccuracies.\n"
+            "3. Synthesize the most accurate, structured, and clear response possible matching the requested persona.\n"
+            "4. Maintain a professional, definitive tone. Do NOT mention 'Model A said' or cite specific AI names in your final output unless there is an unresolvable contradiction that the user must be alerted to."
+        )
+        self.assertEqual(result, expected)
+        self.assertNotIn("{role}", result)
+        self.assertNotIn("{line_of_business}", result)
+        self.assertNotIn("{state}", result)
+
+    def test_build_arbiter_prompt_pure_and_deterministic(self):
+        """Acceptance Criteria: Function is pure - deterministic, no I/O, no side effects."""
+        res1 = build_arbiter_prompt("underwriter", "commercial_pnc", "CA")
+        res2 = build_arbiter_prompt("underwriter", "commercial_pnc", "CA")
+        self.assertEqual(res1, res2)
+        # Ensure underlying constant template is unchanged
+        self.assertIn("{role}", ARBITER_SYSTEM_PROMPT)
+        self.assertIn("{line_of_business}", ARBITER_SYSTEM_PROMPT)
+        self.assertIn("{state}", ARBITER_SYSTEM_PROMPT)
+
+    def test_build_arbiter_prompt_with_enum_arguments(self):
+        """Verify build_arbiter_prompt works identically with RoleEnum and LOBEnum."""
+        res_str = build_arbiter_prompt("claims_adjuster", "homeowners", "MT")
+        res_enum = build_arbiter_prompt(RoleEnum.claims_adjuster, LOBEnum.homeowners, "MT")
+        self.assertEqual(res_str, res_enum)
+
+    def test_build_arbiter_prompt_state_fallback(self):
+        """Verify defensive state fallback to 'MT' when omitted, None, or whitespace."""
+        res_default = build_arbiter_prompt("underwriter", "personal_auto")
+        self.assertIn("(underwriter, personal_auto, MT)", res_default)
+
+        res_none = build_arbiter_prompt("underwriter", "personal_auto", None)
+        self.assertIn("(underwriter, personal_auto, MT)", res_none)
+
+        res_ws = build_arbiter_prompt("underwriter", "personal_auto", "   ")
+        self.assertIn("(underwriter, personal_auto, MT)", res_ws)
+
+    def test_build_arbiter_prompt_custom_state(self):
+        """Verify custom state is correctly interpolated."""
+        res_custom = build_arbiter_prompt("aca_expert", "aca_health", "FL")
+        self.assertIn("(aca_expert, aca_health, FL)", res_custom)
+
+    def test_build_arbiter_prompt_invalid_role(self):
+        """Verify invalid role raises ValueError with descriptive message."""
+        with self.assertRaises(ValueError) as cm:
+            build_arbiter_prompt("invalid_role", "homeowners", "MT")
+        self.assertIn("Invalid role 'invalid_role'", str(cm.exception))
+
+    def test_build_arbiter_prompt_invalid_lob(self):
+        """Verify invalid line_of_business raises ValueError with descriptive message."""
+        with self.assertRaises(ValueError) as cm:
+            build_arbiter_prompt("underwriter", "marine_cargo", "MT")
+        self.assertIn("Invalid line of business 'marine_cargo'", str(cm.exception))
+
+    def test_import_from_app_core(self):
+        """Acceptance Criteria: from app.core.prompts import build_arbiter_prompt works without error."""
+        from app.core import ARBITER_SYSTEM_PROMPT as RE_EXPORTED_PROMPT
+        from app.core import build_arbiter_prompt as re_exported_builder
+        from app.core.prompts import ARBITER_SYSTEM_PROMPT as CORE_PROMPT
+        from app.core.prompts import build_arbiter_prompt as core_builder
+
+        self.assertIs(RE_EXPORTED_PROMPT, CORE_PROMPT)
+        self.assertIs(re_exported_builder, core_builder)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
