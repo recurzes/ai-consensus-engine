@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Header, Request, status
 from fastapi.responses import JSONResponse
 
 from app.core.prompts import build_system_prompt
@@ -13,6 +13,7 @@ from app.schemas.models import (
     Telemetry,
 )
 from app.services.arbiter import ArbiterError, synthesize, synthesize_single
+from app.services.claude_client import get_claude_client
 from app.services.cost_tracker import calculate_all_costs
 from app.services.orchestrator import (
     MODEL_TO_PROVIDER,
@@ -68,6 +69,7 @@ def index() -> dict[str, str]:
 )
 async def create_consensus(
     request: ConsensusRequest,
+    x_anthropic_api_key: str | None = Header(default=None, alias="x-anthropic-api-key"),
 ) -> ConsensusResponse | JSONResponse:
     """Execute end-to-end consensus pipeline across multiple LLM providers.
 
@@ -92,10 +94,18 @@ async def create_consensus(
         state=request.context.state,
     )
 
+    custom_claude_client = None
+    if x_anthropic_api_key is not None:
+        try:
+            custom_claude_client = get_claude_client(api_key=x_anthropic_api_key)
+        except Exception as exc:
+            logger.warning("Could not initialize custom Claude client from header: %s", exc)
+
     # Step 3: Dispatch workers concurrently
     raw_results = await run_workers(
         prompt=request.prompt,
         system_prompt=system_prompt,
+        claude_client=custom_claude_client,
     )
 
     # Step 4: Partition results into success and failure categories

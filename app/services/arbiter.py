@@ -191,7 +191,9 @@ async def synthesize(
         )
 
     effective_timeout = (
-        timeout if timeout is not None else settings.request_timeout_seconds
+        timeout
+        if timeout is not None
+        else max(30.0, float(settings.request_timeout_seconds * 2))
     )
 
     role = (

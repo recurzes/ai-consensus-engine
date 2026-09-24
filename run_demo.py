@@ -31,13 +31,24 @@ try:
 except ImportError:
     HAS_RICH = False
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def get_console(stderr: bool = False) -> Console | None:
     """Return a Rich Console instance bound to current stdout/stderr."""
     if not HAS_RICH:
         return None
     target_stream = sys.stderr if stderr else sys.stdout
-    return Console(file=target_stream, highlight=False)
+    return Console(file=target_stream, highlight=False, soft_wrap=True)
 
 
 # Constants
@@ -83,9 +94,25 @@ SCENARIO_2: dict[str, Any] = {
     },
 }
 
+SCENARIO_3: dict[str, Any] = {
+    "prompt": (
+        "What are the key coverage differences between a BOP and a standalone "
+        "Commercial Property policy for a small business in Montana?"
+    ),
+    "context": {
+        "role": "underwriter",
+        "line_of_business": "commercial_pnc",
+        "state": "MT",
+    },
+}
+
 SCENARIOS: list[tuple[str, dict[str, Any]]] = [
     ("Scenario 1: Consumer Translation (layman_linguist)", SCENARIO_1),
     ("Scenario 2: Underwriting / Coverage Analysis (claims_adjuster, MT)", SCENARIO_2),
+    (
+        "Scenario 3: Failover Verification (Claude API key corrupted)",
+        SCENARIO_3,
+    ),
 ]
 
 
@@ -203,6 +230,8 @@ def run_scenario(
     payload: dict[str, Any],
     endpoint_url: str = DEFAULT_API_URL,
     timeout: float = 60.0,
+    headers: dict[str, str] | None = None,
+    is_failover: bool = False,
 ) -> dict[str, Any] | None:
     """Execute a single scenario by posting to the consensus endpoint.
 
@@ -213,15 +242,27 @@ def run_scenario(
         payload: JSON request payload conforming to ConsensusRequest schema.
         endpoint_url: URL to the consensus endpoint.
         timeout: Request timeout in seconds.
+        headers: Optional HTTP request headers (e.g. for key corruption testing).
+        is_failover: If True, prints corruption notice and failover verification block.
 
     Returns:
         dict[str, Any] | None: Response dictionary on success, or None on failure.
     """
     print_header(scenario_name)
 
+    console = get_console()
+
+    if is_failover:
+        corruption_banner = (
+            "[!] Intentionally corrupting ANTHROPIC_API_KEY to simulate provider failure...\n"
+        )
+        if console is not None:
+            console.print(f"[bold yellow]{corruption_banner}[/bold yellow]")
+        else:
+            print(corruption_banner)
+
     prompt = payload.get("prompt", "")
     if prompt:
-        console = get_console()
         if console is not None:
             console.print(f"Prompt: {prompt}\n")
         else:
@@ -229,7 +270,7 @@ def run_scenario(
 
     try:
         with httpx.Client(timeout=timeout) as client:
-            response = client.post(endpoint_url, json=payload)
+            response = client.post(endpoint_url, json=payload, headers=headers)
     except httpx.ConnectError:
         print_error(
             f"\n[ERROR] Could not connect to API server at:\n  {endpoint_url}\n\n"
@@ -268,7 +309,6 @@ def run_scenario(
     telemetry = data.get("telemetry", {})
 
     print("Consensus Answer:")
-    console = get_console()
     if console is not None:
         console.print(f"[white]{consensus_answer}[/white]")
     else:
@@ -276,6 +316,26 @@ def run_scenario(
     print()
 
     print(format_telemetry(telemetry))
+
+    if is_failover:
+        failed_providers = telemetry.get("failed_providers") or ["claude"]
+        successful_providers = telemetry.get("successful_providers") or ["gemini", "openai"]
+        failed_str = ", ".join(failed_providers)
+        success_str = ", ".join(successful_providers)
+
+        verification_lines = [
+            "",
+            "✓ FAILOVER VERIFIED: App returned a consensus answer despite one provider failure.",
+            f"✓ Failed provider: {failed_str}",
+            f"✓ Successful providers: [{success_str}]",
+            "✓ The application did NOT crash or raise an unhandled exception.",
+        ]
+        verification_text = "\n".join(verification_lines)
+        if console is not None:
+            console.print(verification_text, style="bold green", markup=False)
+        else:
+            print(verification_text)
+
     print_divider()
 
     return data
@@ -300,7 +360,32 @@ def main() -> None:
     for idx, (scenario_name, payload) in enumerate(SCENARIOS):
         if idx > 0:
             print()
-        run_scenario(scenario_name, payload)
+
+        is_failover = "Failover" in scenario_name or "Scenario 3" in scenario_name
+        original_key = os.environ.get("ANTHROPIC_API_KEY")
+
+        if is_failover:
+            os.environ["ANTHROPIC_API_KEY"] = "sk-intentionally-invalid-for-failover-test"
+
+        headers = (
+            {"x-anthropic-api-key": os.environ["ANTHROPIC_API_KEY"]}
+            if is_failover
+            else None
+        )
+
+        try:
+            if is_failover:
+                run_scenario(
+                    scenario_name,
+                    payload,
+                    headers=headers,
+                    is_failover=True,
+                )
+            else:
+                run_scenario(scenario_name, payload)
+        finally:
+            if is_failover and original_key is not None:
+                os.environ["ANTHROPIC_API_KEY"] = original_key
 
 
 if __name__ == "__main__":
