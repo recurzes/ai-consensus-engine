@@ -87,5 +87,95 @@ async def run_workers(
     return list(results)
 
 
-__all__ = ["run_workers"]
+MODEL_TO_PROVIDER: dict[str, str] = {
+    GEMINI_MODEL_NAME: "gemini",
+    OPENAI_MODEL_NAME: "openai",
+    CLAUDE_MODEL_NAME: "claude",
+    "gemini-2.5-flash": "gemini",
+    "gpt-4o-mini": "openai",
+    "claude-3-5-haiku": "claude",
+}
+
+ORDERED_PROVIDERS: tuple[str, ...] = ("gemini", "openai", "claude")
+
+
+def partition_results(
+    raw_results: list[dict[str, Any] | Exception],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any] | Exception], list[str], list[str]]:
+    """Partition raw worker results into successful and failed lists with provider names.
+
+    Classifies worker results returned from run_workers into successful and failed
+    categories, and extracts the corresponding provider names ("gemini", "openai", "claude").
+
+    A result is considered successful if:
+    - It is a dictionary,
+    - result["status"] == "success", and
+    - result["response_text"] is not None.
+
+    A result is considered failed if:
+    - It is a bare Python Exception (e.g. from return_exceptions=True),
+    - result["status"] == "error", or
+    - It does not meet the success criteria.
+
+    Args:
+        raw_results: List of raw worker results (dicts or Exception instances).
+
+    Returns:
+        A 4-tuple of:
+        (successful_results, failed_results, successful_providers, failed_providers)
+    """
+    successful_results: list[dict[str, Any]] = []
+    failed_results: list[dict[str, Any] | Exception] = []
+    successful_providers: list[str] = []
+    failed_providers: list[str] = []
+
+    for idx, item in enumerate(raw_results):
+        provider_name: str | None = None
+
+        if isinstance(item, dict):
+            model = item.get("model")
+            if model in MODEL_TO_PROVIDER:
+                provider_name = MODEL_TO_PROVIDER[model]
+            elif isinstance(item.get("provider"), str):
+                provider_name = item["provider"]
+            elif isinstance(model, str):
+                model_lower = model.lower()
+                if "gemini" in model_lower:
+                    provider_name = "gemini"
+                elif "openai" in model_lower or "gpt" in model_lower:
+                    provider_name = "openai"
+                elif "claude" in model_lower or "anthropic" in model_lower:
+                    provider_name = "claude"
+        elif isinstance(item, Exception):
+            provider_attr = getattr(item, "provider", None)
+            if isinstance(provider_attr, str):
+                provider_name = provider_attr
+
+        # Fallback to positional mapping for deterministic 3-provider order
+        if provider_name is None and 0 <= idx < len(ORDERED_PROVIDERS):
+            provider_name = ORDERED_PROVIDERS[idx]
+
+        if provider_name is None:
+            provider_name = "unknown"
+
+        if (
+            isinstance(item, dict)
+            and item.get("status") == "success"
+            and item.get("response_text") is not None
+        ):
+            successful_results.append(item)
+            successful_providers.append(provider_name)
+        else:
+            failed_results.append(item)
+            failed_providers.append(provider_name)
+
+    return successful_results, failed_results, successful_providers, failed_providers
+
+
+__all__ = [
+    "MODEL_TO_PROVIDER",
+    "ORDERED_PROVIDERS",
+    "partition_results",
+    "run_workers",
+]
 

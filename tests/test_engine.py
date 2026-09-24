@@ -16,7 +16,12 @@ for k, v in _TEST_ENV_DEFAULTS.items():
 
 from app.config import settings
 from app.schemas.models import ProviderResult
-from app.services.orchestrator import run_workers
+from app.services.orchestrator import (
+    MODEL_TO_PROVIDER,
+    ORDERED_PROVIDERS,
+    partition_results,
+    run_workers,
+)
 
 
 class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
@@ -373,6 +378,177 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0]["tokens"], {"input": 0, "output": 0})
         self.assertIsNone(results[0]["response_text"])
         self.assertEqual(results[0]["error_message"], "Request timed out after 12 seconds")
+
+
+class TestPartitionResults(unittest.TestCase):
+    """Unit tests for partition_results and failed provider capture."""
+
+    def setUp(self):
+        self.gemini_success = {
+            "status": "success",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 0.12,
+            "tokens": {"input": 15, "output": 25},
+            "response_text": "Gemini response text",
+        }
+        self.openai_success = {
+            "status": "success",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 0.18,
+            "tokens": {"input": 18, "output": 30},
+            "response_text": "OpenAI response text",
+        }
+        self.claude_success = {
+            "status": "success",
+            "model": "claude-3-5-haiku",
+            "duration_seconds": 0.22,
+            "tokens": {"input": 14, "output": 28},
+            "response_text": "Claude response text",
+        }
+        self.gemini_error = {
+            "status": "error",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 0.05,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Gemini API rate limit",
+        }
+        self.openai_error = {
+            "status": "error",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 0.05,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Request timed out after 0.05 seconds",
+        }
+        self.claude_error = {
+            "status": "error",
+            "model": "claude-3-5-haiku",
+            "duration_seconds": 0.05,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Authentication failed",
+        }
+
+    def test_provider_name_mapping_constants(self):
+        """Verify model to provider mappings match specification requirements."""
+        self.assertEqual(MODEL_TO_PROVIDER["gemini-2.5-flash"], "gemini")
+        self.assertEqual(MODEL_TO_PROVIDER["gpt-4o-mini"], "openai")
+        self.assertEqual(MODEL_TO_PROVIDER["claude-3-5-haiku"], "claude")
+
+    def test_partition_results_all_success(self):
+        """Given 3 success results: successful_providers has 3, failed_providers is empty."""
+        raw_results = [self.gemini_success, self.openai_success, self.claude_success]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 3)
+        self.assertEqual(len(failed_results), 0)
+        self.assertEqual(successful_providers, ["gemini", "openai", "claude"])
+        self.assertEqual(failed_providers, [])
+        self.assertEqual(successful_results, raw_results)
+
+    def test_partition_results_one_failure_claude(self):
+        """Given 2 successes + 1 failure (Claude): successful has 2, failed has 1."""
+        raw_results = [self.gemini_success, self.openai_success, self.claude_error]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 2)
+        self.assertEqual(len(failed_results), 1)
+        self.assertEqual(successful_providers, ["gemini", "openai"])
+        self.assertEqual(failed_providers, ["claude"])
+        self.assertEqual(successful_results, [self.gemini_success, self.openai_success])
+        self.assertEqual(failed_results, [self.claude_error])
+
+    def test_partition_results_one_failure_openai(self):
+        """Given 2 successes + 1 failure (OpenAI): successful has 2, failed has 1."""
+        raw_results = [self.gemini_success, self.openai_error, self.claude_success]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 2)
+        self.assertEqual(len(failed_results), 1)
+        self.assertEqual(successful_providers, ["gemini", "claude"])
+        self.assertEqual(failed_providers, ["openai"])
+
+    def test_partition_results_one_failure_gemini(self):
+        """Given 2 successes + 1 failure (Gemini): successful has 2, failed has 1."""
+        raw_results = [self.gemini_error, self.openai_success, self.claude_success]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 2)
+        self.assertEqual(len(failed_results), 1)
+        self.assertEqual(successful_providers, ["openai", "claude"])
+        self.assertEqual(failed_providers, ["gemini"])
+
+    def test_partition_results_two_failures(self):
+        """Given 1 success + 2 failures: successful has 1, failed has 2."""
+        raw_results = [self.gemini_success, self.openai_error, self.claude_error]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 1)
+        self.assertEqual(len(failed_results), 2)
+        self.assertEqual(successful_providers, ["gemini"])
+        self.assertEqual(failed_providers, ["openai", "claude"])
+
+    def test_partition_results_all_failures(self):
+        """Given 0 successes: successful_providers is empty, failed_providers has all 3."""
+        raw_results = [self.gemini_error, self.openai_error, self.claude_error]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 0)
+        self.assertEqual(len(failed_results), 3)
+        self.assertEqual(successful_providers, [])
+        self.assertEqual(failed_providers, ["gemini", "openai", "claude"])
+
+    def test_partition_results_bare_exception_treated_as_failed(self):
+        """Any bare Python exception slipped through return_exceptions=True is treated as failed."""
+        exc = RuntimeError("Unhandled socket crash in worker")
+        raw_results = [self.gemini_success, exc, self.claude_success]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 2)
+        self.assertEqual(len(failed_results), 1)
+        self.assertEqual(successful_providers, ["gemini", "claude"])
+        self.assertEqual(failed_providers, ["openai"])
+        self.assertIs(failed_results[0], exc)
+
+    def test_partition_results_all_bare_exceptions(self):
+        """When all providers return bare exceptions, all are placed in failed_providers in order."""
+        exc1 = TimeoutError("Gemini timed out")
+        exc2 = ConnectionResetError("OpenAI connection reset")
+        exc3 = RuntimeError("Claude crashed")
+        raw_results = [exc1, exc2, exc3]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(successful_results, [])
+        self.assertEqual(len(failed_results), 3)
+        self.assertEqual(successful_providers, [])
+        self.assertEqual(failed_providers, ["gemini", "openai", "claude"])
+
+    def test_partition_results_success_status_with_none_response_text_treated_as_failed(self):
+        """A result with status 'success' but None response_text must be classified as failed."""
+        invalid_gemini = {
+            "status": "success",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 0.1,
+            "tokens": {"input": 10, "output": 0},
+            "response_text": None,
+        }
+        raw_results = [invalid_gemini, self.openai_success, self.claude_success]
+        successful_results, failed_results, successful_providers, failed_providers = partition_results(raw_results)
+
+        self.assertEqual(len(successful_results), 2)
+        self.assertEqual(len(failed_results), 1)
+        self.assertEqual(successful_providers, ["openai", "claude"])
+        self.assertEqual(failed_providers, ["gemini"])
+        self.assertEqual(failed_results[0], invalid_gemini)
+
+    def test_partition_results_empty_list(self):
+        """Partitioning an empty list returns 4 empty lists."""
+        successful_results, failed_results, successful_providers, failed_providers = partition_results([])
+        self.assertEqual(successful_results, [])
+        self.assertEqual(failed_results, [])
+        self.assertEqual(successful_providers, [])
+        self.assertEqual(failed_providers, [])
 
 
 if __name__ == "__main__":
