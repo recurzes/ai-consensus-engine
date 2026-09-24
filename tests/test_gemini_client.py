@@ -51,7 +51,7 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["model"], MODEL_NAME)
-        self.assertEqual(result["model"], "gemini-2.5-flash")
+        self.assertEqual(result["model"], "gemini-3-flash-preview")
         self.assertEqual(
             result["response_text"],
             "This is a detailed analysis of personal auto insurance.",
@@ -83,7 +83,7 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
 
         self.mock_client.aio.models.generate_content.assert_awaited_once()
         _, kwargs = self.mock_client.aio.models.generate_content.call_args
-        self.assertEqual(kwargs["model"], "gemini-2.5-flash")
+        self.assertEqual(kwargs["model"], MODEL_NAME)
         self.assertEqual(kwargs["contents"], "Test prompt")
         config = kwargs["config"]
         self.assertEqual(config.system_instruction, "Test system instruction")
@@ -111,7 +111,7 @@ class TestGeminiClient(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["status"], "error")
-        self.assertEqual(result["model"], "gemini-2.5-flash")
+        self.assertEqual(result["model"], MODEL_NAME)
         self.assertIsNone(result["response_text"])
         self.assertEqual(result["tokens"], {"input": 0, "output": 0})
         self.assertIsInstance(result["duration_seconds"], float)

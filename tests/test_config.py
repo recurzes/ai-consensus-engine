@@ -169,8 +169,10 @@ class TestConfig(unittest.TestCase):
 
     def test_module_singleton_import_fails_on_missing_required_keys(self):
         """Verify importing/reloading app.config fails fast when required key is missing."""
-        # Clean environment with no keys set
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "pydantic_settings.sources.DotEnvSettingsSource._read_env_files",
+            return_value={},
+        ):
             with self.assertRaises(ValidationError) as ctx:
                 importlib.reload(app.config)
             error_fields = [e["loc"][0] for e in ctx.exception.errors()]

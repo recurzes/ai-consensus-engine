@@ -261,7 +261,7 @@ class TestSynthesizeGemini(unittest.IsolatedAsyncioTestCase):
 
         call_args = self.mock_client.aio.models.generate_content.call_args
         self.assertEqual(call_args.kwargs["model"], ARBITER_MODELS["gemini"])
-        self.assertEqual(call_args.kwargs["model"], "gemini-2.5-pro")
+        self.assertEqual(call_args.kwargs["model"], "gemini-3-flash-preview")
 
         # Verify system prompt interpolation
         expected_system_prompt = build_arbiter_prompt(
@@ -406,7 +406,7 @@ class TestSynthesizeProviderResolution(unittest.IsolatedAsyncioTestCase):
         mock_gemini_client.aio.models.generate_content.assert_awaited_once()
         self.assertEqual(
             mock_gemini_client.aio.models.generate_content.call_args.kwargs["model"],
-            "gemini-2.5-pro",
+            ARBITER_MODELS["gemini"],
         )
 
     async def test_default_to_settings_openai(self):
@@ -527,7 +527,7 @@ class TestSynthesizeDegradedPath(unittest.IsolatedAsyncioTestCase):
         mock_client.aio.models.generate_content.assert_awaited_once()
 
         call_args = mock_client.aio.models.generate_content.call_args
-        self.assertEqual(call_args.kwargs["model"], "gemini-2.5-pro")
+        self.assertEqual(call_args.kwargs["model"], ARBITER_MODELS["gemini"])
 
         # Verify single-survivor prompt adaptation
         user_msg = call_args.kwargs["contents"]

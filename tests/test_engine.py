@@ -17,6 +17,7 @@ for k, v in _TEST_ENV_DEFAULTS.items():
 from app.config import settings
 from app.schemas.models import ProviderResult
 from app.services.orchestrator import (
+    GEMINI_MODEL_NAME,
     MODEL_TO_PROVIDER,
     ORDERED_PROVIDERS,
     partition_results,
@@ -33,7 +34,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
 
         self.mock_gemini_success = {
             "status": "success",
-            "model": "gemini-2.5-flash",
+            "model": GEMINI_MODEL_NAME,
             "duration_seconds": 0.12,
             "tokens": {"input": 15, "output": 25},
             "response_text": "Gemini response text",
@@ -70,7 +71,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 3)
 
         # Ordering guarantee: [gemini, openai, claude]
-        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(results[0]["model"], GEMINI_MODEL_NAME)
         self.assertEqual(results[1]["model"], "gpt-4o-mini")
         self.assertEqual(results[2]["model"], "claude-3-5-haiku")
 
@@ -128,7 +129,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 3)
         # Gemini succeeded
         self.assertEqual(results[0]["status"], "success")
-        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(results[0]["model"], GEMINI_MODEL_NAME)
 
         # OpenAI exception captured in list without raising
         self.assertIsInstance(results[1], RuntimeError)
@@ -254,7 +255,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
 
         # Gemini succeeded
         self.assertEqual(results[0]["status"], "success")
-        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(results[0]["model"], GEMINI_MODEL_NAME)
 
         # OpenAI timed out
         openai_res = results[1]
@@ -292,7 +293,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         results = await run_workers(self.prompt, self.system_prompt, timeout=0.05)
 
         self.assertEqual(len(results), 3)
-        expected_models = ["gemini-2.5-flash", "gpt-4o-mini", "claude-3-5-haiku"]
+        expected_models = [GEMINI_MODEL_NAME, "gpt-4o-mini", "claude-3-5-haiku"]
         for res, expected_model in zip(results, expected_models):
             self.assertEqual(res["status"], "error")
             self.assertEqual(res["model"], expected_model)
@@ -330,7 +331,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(task_was_cancelled)
         self.assertEqual(results[0]["status"], "error")
-        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(results[0]["model"], GEMINI_MODEL_NAME)
 
     @patch("app.services.orchestrator.settings")
     @patch("app.services.orchestrator.call_claude")
@@ -373,7 +374,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(results), 3)
         self.assertEqual(results[0]["status"], "error")
-        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(results[0]["model"], GEMINI_MODEL_NAME)
         self.assertEqual(results[0]["duration_seconds"], 12.0)
         self.assertEqual(results[0]["tokens"], {"input": 0, "output": 0})
         self.assertIsNone(results[0]["response_text"])
@@ -386,7 +387,7 @@ class TestPartitionResults(unittest.TestCase):
     def setUp(self):
         self.gemini_success = {
             "status": "success",
-            "model": "gemini-2.5-flash",
+            "model": GEMINI_MODEL_NAME,
             "duration_seconds": 0.12,
             "tokens": {"input": 15, "output": 25},
             "response_text": "Gemini response text",
@@ -407,7 +408,7 @@ class TestPartitionResults(unittest.TestCase):
         }
         self.gemini_error = {
             "status": "error",
-            "model": "gemini-2.5-flash",
+            "model": GEMINI_MODEL_NAME,
             "duration_seconds": 0.05,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,
@@ -433,6 +434,7 @@ class TestPartitionResults(unittest.TestCase):
     def test_provider_name_mapping_constants(self):
         """Verify model to provider mappings match specification requirements."""
         self.assertEqual(MODEL_TO_PROVIDER["gemini-2.5-flash"], "gemini")
+        self.assertEqual(MODEL_TO_PROVIDER[GEMINI_MODEL_NAME], "gemini")
         self.assertEqual(MODEL_TO_PROVIDER["gpt-4o-mini"], "openai")
         self.assertEqual(MODEL_TO_PROVIDER["claude-3-5-haiku"], "claude")
 
