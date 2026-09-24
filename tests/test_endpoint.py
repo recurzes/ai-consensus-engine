@@ -394,6 +394,184 @@ class TestConsensusEndpointGracefulDegradation(unittest.TestCase):
         self.assertIn("Arbiter synthesis failed", data["message"])
 
 
+class TestConsensusEndpointTotalFailure(unittest.TestCase):
+    """Integration and route tests for total failure and global exception handling."""
+
+    def setUp(self):
+        # Disable re-raising server exceptions so TestClient returns HTTP 500 responses
+        self.client = TestClient(app, raise_server_exceptions=False)
+        self.valid_payload = {
+            "prompt": "An insured backed a trailer into their garage door. How is this covered?",
+            "context": {
+                "role": "claims_adjuster",
+                "line_of_business": "homeowners",
+                "state": "MT",
+            },
+        }
+
+        self.mock_gemini_error = {
+            "status": "error",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 12.0,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Request timed out after 12 seconds",
+        }
+        self.mock_openai_error = {
+            "status": "error",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 0.30,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Authentication error: invalid API key",
+        }
+        self.mock_claude_error = {
+            "status": "error",
+            "model": "claude-3-5-haiku",
+            "duration_seconds": 0.25,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Rate limit exceeded",
+        }
+
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_all_providers_failure_returns_502_and_structured_error_payload(
+        self, mock_run_workers, mock_synthesize, mock_synthesize_single
+    ):
+        """Verify that when all 3 providers fail, HTTP 502 is returned and arbiter is not called."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_error,
+            self.mock_openai_error,
+            self.mock_claude_error,
+        ]
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 502)
+        data = response.json()
+        self.assertEqual(data["status"], "error")
+        self.assertEqual(
+            data["message"],
+            "All AI providers failed. No consensus could be generated.",
+        )
+        self.assertIn("failed_providers", data)
+        self.assertEqual(
+            data["failed_providers"],
+            {
+                "gemini": "Request timed out after 12 seconds",
+                "openai": "Authentication error: invalid API key",
+                "claude": "Rate limit exceeded",
+            },
+        )
+
+        # Arbiter must NEVER be called
+        mock_synthesize.assert_not_called()
+        mock_synthesize_single.assert_not_called()
+
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_all_providers_exceptions_returns_502(
+        self, mock_run_workers, mock_synthesize, mock_synthesize_single
+    ):
+        """Verify raw exceptions from all 3 workers return HTTP 502 with individual error messages."""
+        mock_run_workers.return_value = [
+            TimeoutError("Gemini transport timed out"),
+            RuntimeError("OpenAI authentication failure"),
+            ConnectionError("Claude rate limit reached"),
+        ]
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 502)
+        data = response.json()
+        self.assertEqual(data["status"], "error")
+        self.assertEqual(
+            data["message"],
+            "All AI providers failed. No consensus could be generated.",
+        )
+        self.assertEqual(
+            data["failed_providers"],
+            {
+                "gemini": "Gemini transport timed out",
+                "openai": "OpenAI authentication failure",
+                "claude": "Claude rate limit reached",
+            },
+        )
+
+        mock_synthesize.assert_not_called()
+        mock_synthesize_single.assert_not_called()
+
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_global_exception_handler_returns_500_on_unhandled_route_exception(
+        self, mock_run_workers
+    ):
+        """Verify unexpected unhandled exceptions in route return HTTP 500 with clean JSON body."""
+        mock_run_workers.side_effect = RuntimeError("Fatal internal route bug")
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 500)
+        data = response.json()
+        self.assertEqual(
+            data,
+            {
+                "status": "error",
+                "message": "An unexpected error occurred.",
+            },
+        )
+        # Verify no traceback in the response body
+        self.assertNotIn("Traceback", response.text)
+        self.assertNotIn("Fatal internal route bug", response.text)
+
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_app_recovers_after_total_failure_without_restart(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Verify app does not crash or corrupt state, successfully serving requests after total failure."""
+        # 1. Total failure request
+        mock_run_workers.return_value = [
+            self.mock_gemini_error,
+            self.mock_openai_error,
+            self.mock_claude_error,
+        ]
+        fail_response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+        self.assertEqual(fail_response.status_code, 502)
+
+        # 2. Subsequent happy path request
+        mock_run_workers.return_value = [
+            {
+                "status": "success",
+                "model": "gemini-2.5-flash",
+                "duration_seconds": 0.8,
+                "tokens": {"input": 100, "output": 200},
+                "response_text": "Covered under Dwelling A.",
+            },
+            {
+                "status": "success",
+                "model": "gpt-4o-mini",
+                "duration_seconds": 0.9,
+                "tokens": {"input": 100, "output": 200},
+                "response_text": "Covered under Dwelling A.",
+            },
+            {
+                "status": "success",
+                "model": "claude-3-5-haiku",
+                "duration_seconds": 1.0,
+                "tokens": {"input": 100, "output": 200},
+                "response_text": "Covered under Dwelling A.",
+            },
+        ]
+        mock_synthesize.return_value = "Consensus: Covered under Dwelling A."
+        success_response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+        self.assertEqual(success_response.status_code, 200)
+        self.assertEqual(success_response.json()["status"], "success")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
