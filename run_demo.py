@@ -55,11 +55,25 @@ REQUIRED_ENV_VARS = (
 
 VALID_ARBITER_PROVIDERS = ("gemini", "openai")
 
-# Extensible Scenario Registry for upcoming demo scenarios:
+# Extensible Scenario Registry:
 # - Scenario 1: Consumer Translation (layman_linguist)
 # - Scenario 2: Underwriting Analysis (strict_underwriter)
 # - Scenario 3: Failover Verification
-SCENARIOS: list[tuple[str, dict[str, Any]]] = []
+SCENARIO_1: dict[str, Any] = {
+    "prompt": (
+        "My homeowners policy has an 'Ordinance or Law' endorsement. "
+        "What does that mean and when would it actually pay out?"
+    ),
+    "context": {
+        "role": "layman_linguist",
+        "line_of_business": "homeowners",
+        "state": "MT",
+    },
+}
+
+SCENARIOS: list[tuple[str, dict[str, Any]]] = [
+    ("Scenario 1: Consumer Translation (layman_linguist)", SCENARIO_1),
+]
 
 
 def print_divider(char: str = DIVIDER_CHAR, length: int = DIVIDER_LENGTH, stderr: bool = False) -> None:
@@ -105,8 +119,10 @@ def format_telemetry(telemetry: dict[str, Any]) -> str:
 
     return (
         f"Telemetry:\n"
-        f"  Duration: {duration:.2f}s | Cost: ${cost:.5f} | "
-        f"Success: [{success_str}] | Failed: [{failed_str}]"
+        f"  Total Duration:  {duration:.2f}s\n"
+        f"  Estimated Cost:  ${cost:.5f}\n"
+        f"  Successful:      [{success_str}]\n"
+        f"  Failed:          [{failed_str}]"
     )
 
 
@@ -189,6 +205,14 @@ def run_scenario(
         dict[str, Any] | None: Response dictionary on success, or None on failure.
     """
     print_header(scenario_name)
+
+    prompt = payload.get("prompt", "")
+    if prompt:
+        console = get_console()
+        if console is not None:
+            console.print(f"Prompt: {prompt}\n")
+        else:
+            print(f"Prompt: {prompt}\n")
 
     try:
         with httpx.Client(timeout=timeout) as client:
