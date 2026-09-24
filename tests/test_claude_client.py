@@ -376,6 +376,25 @@ class TestClaudeClient(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             get_claude_client(api_key="")
 
+    def test_get_claude_client_with_workspace_id(self):
+        """Verify get_claude_client passes anthropic-workspace-id header when provided."""
+        client = get_claude_client(
+            api_key="sk-ant-custom-valid-key", workspace_id="wrkspc_test_123"
+        )
+        self.assertIsNotNone(client)
+        self.assertEqual(
+            client.default_headers.get("anthropic-workspace-id"), "wrkspc_test_123"
+        )
+
+    def test_get_claude_client_from_settings_workspace_id(self):
+        """Verify get_claude_client uses settings.anthropic_workspace_id by default."""
+        with patch.object(settings, "anthropic_workspace_id", "wrkspc_settings_456"):
+            client = get_claude_client(api_key="sk-ant-custom-valid-key")
+            self.assertEqual(
+                client.default_headers.get("anthropic-workspace-id"),
+                "wrkspc_settings_456",
+            )
+
     async def test_contract_parity_with_gemini_and_openai(self):
         """Verify return shape is strictly identical across call_claude, call_openai, and call_gemini."""
         # Success shapes

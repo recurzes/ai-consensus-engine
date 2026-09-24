@@ -61,11 +61,15 @@ def _normalize_error(exc: Exception) -> str:
     return f"Unexpected error: {exc}"
 
 
-def get_claude_client(api_key: str | None = None) -> AsyncAnthropic:
+def get_claude_client(
+    api_key: str | None = None,
+    workspace_id: str | None = None,
+) -> AsyncAnthropic:
     """Initialize and return an AsyncAnthropic client instance.
 
     Args:
         api_key: Optional Anthropic API key. Defaults to settings.anthropic_api_key.
+        workspace_id: Optional Anthropic workspace ID. Defaults to settings.anthropic_workspace_id.
 
     Returns:
         A configured AsyncAnthropic instance.
@@ -73,7 +77,20 @@ def get_claude_client(api_key: str | None = None) -> AsyncAnthropic:
     key = api_key if api_key is not None else settings.anthropic_api_key
     if not key or not str(key).strip():
         raise ValueError("Anthropic API key is missing or empty.")
-    return AsyncAnthropic(api_key=key)
+
+    ws_id = (
+        workspace_id
+        if workspace_id is not None
+        else settings.anthropic_workspace_id
+    )
+    default_headers: dict[str, str] = {}
+    if ws_id and str(ws_id).strip():
+        default_headers["anthropic-workspace-id"] = str(ws_id).strip()
+
+    return AsyncAnthropic(
+        api_key=key,
+        default_headers=default_headers if default_headers else None,
+    )
 
 
 async def call_claude(

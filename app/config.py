@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(..., min_length=1, description="Google Gemini API key")
     openai_api_key: str = Field(..., min_length=1, description="OpenAI API key")
     anthropic_api_key: str = Field(..., min_length=1, description="Anthropic API key")
+    anthropic_workspace_id: str | None = Field(
+        default=None, description="Optional Anthropic Workspace ID header (for unscoped keys)"
+    )
     arbiter_model_provider: Literal["gemini", "openai"] = Field(
         ..., description="Arbiter model provider ('gemini' or 'openai')"
     )
