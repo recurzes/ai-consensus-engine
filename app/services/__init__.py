@@ -1,3 +1,3 @@
-from app.services.orchestrator import run_workers
+from app.services.orchestrator import partition_results, run_workers
 
-__all__ = ["run_workers"]
+__all__ = ["partition_results", "run_workers"]
