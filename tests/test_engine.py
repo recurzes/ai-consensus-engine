@@ -228,6 +228,153 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
             client=fake_claude_client,
         )
 
+    @patch("app.services.orchestrator.call_claude")
+    @patch("app.services.orchestrator.call_openai")
+    @patch("app.services.orchestrator.call_gemini")
+    async def test_run_workers_single_provider_timeout_returns_normalized_error_and_preserves_others(
+        self, mock_gemini, mock_openai, mock_claude
+    ):
+        """Verify slow provider times out into normalized error dict without impacting others."""
+        async def slow_openai(*args, **kwargs):
+            await asyncio.sleep(1.0)
+            return self.mock_openai_success
+
+        mock_gemini.return_value = self.mock_gemini_success
+        mock_openai.side_effect = slow_openai
+        mock_claude.return_value = self.mock_claude_success
+
+        results = await run_workers(self.prompt, self.system_prompt, timeout=0.05)
+
+        self.assertEqual(len(results), 3)
+
+        # Gemini succeeded
+        self.assertEqual(results[0]["status"], "success")
+        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+
+        # OpenAI timed out
+        openai_res = results[1]
+        self.assertEqual(openai_res["status"], "error")
+        self.assertEqual(openai_res["model"], "gpt-4o-mini")
+        self.assertEqual(openai_res["duration_seconds"], 0.05)
+        self.assertEqual(openai_res["tokens"], {"input": 0, "output": 0})
+        self.assertIsNone(openai_res["response_text"])
+        self.assertIn("timed out", openai_res["error_message"])
+        self.assertEqual(openai_res["error_message"], "Request timed out after 0.05 seconds")
+
+        # Claude succeeded
+        self.assertEqual(results[2]["status"], "success")
+        self.assertEqual(results[2]["model"], "claude-3-5-haiku")
+
+        # Conforms to ProviderResult schema
+        for res in results:
+            validated = ProviderResult(**res)
+            self.assertIn(validated.status, ("success", "error"))
+
+    @patch("app.services.orchestrator.call_claude")
+    @patch("app.services.orchestrator.call_openai")
+    @patch("app.services.orchestrator.call_gemini")
+    async def test_run_workers_all_providers_timeout(
+        self, mock_gemini, mock_openai, mock_claude
+    ):
+        """Verify gather still completes and returns 3 error results when all providers time out."""
+        async def hang(*args, **kwargs):
+            await asyncio.sleep(1.0)
+
+        mock_gemini.side_effect = hang
+        mock_openai.side_effect = hang
+        mock_claude.side_effect = hang
+
+        results = await run_workers(self.prompt, self.system_prompt, timeout=0.05)
+
+        self.assertEqual(len(results), 3)
+        expected_models = ["gemini-2.5-flash", "gpt-4o-mini", "claude-3-5-haiku"]
+        for res, expected_model in zip(results, expected_models):
+            self.assertEqual(res["status"], "error")
+            self.assertEqual(res["model"], expected_model)
+            self.assertEqual(res["duration_seconds"], 0.05)
+            self.assertEqual(res["tokens"], {"input": 0, "output": 0})
+            self.assertIsNone(res["response_text"])
+            self.assertIn("timed out", res["error_message"])
+            self.assertEqual(res["error_message"], "Request timed out after 0.05 seconds")
+            # Conforms to ProviderResult schema
+            validated = ProviderResult(**res)
+            self.assertEqual(validated.status, "error")
+
+    @patch("app.services.orchestrator.call_claude")
+    @patch("app.services.orchestrator.call_openai")
+    @patch("app.services.orchestrator.call_gemini")
+    async def test_run_workers_timeout_cancels_hanging_task(
+        self, mock_gemini, mock_openai, mock_claude
+    ):
+        """Verify that asyncio.wait_for cancels the hanging coroutine when timing out."""
+        task_was_cancelled = False
+
+        async def hanging_gemini(*args, **kwargs):
+            nonlocal task_was_cancelled
+            try:
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                task_was_cancelled = True
+                raise
+
+        mock_gemini.side_effect = hanging_gemini
+        mock_openai.return_value = self.mock_openai_success
+        mock_claude.return_value = self.mock_claude_success
+
+        results = await run_workers(self.prompt, self.system_prompt, timeout=0.05)
+
+        self.assertTrue(task_was_cancelled)
+        self.assertEqual(results[0]["status"], "error")
+        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+
+    @patch("app.services.orchestrator.settings")
+    @patch("app.services.orchestrator.call_claude")
+    @patch("app.services.orchestrator.call_openai")
+    @patch("app.services.orchestrator.call_gemini")
+    async def test_run_workers_timeout_defaults_to_settings(
+        self, mock_gemini, mock_openai, mock_claude, mock_settings
+    ):
+        """Verify timeout defaults to settings.request_timeout_seconds."""
+        mock_settings.request_timeout_seconds = 0.05
+
+        async def hang(*args, **kwargs):
+            await asyncio.sleep(1.0)
+
+        mock_gemini.side_effect = hang
+        mock_openai.return_value = self.mock_openai_success
+        mock_claude.return_value = self.mock_claude_success
+
+        results = await run_workers(self.prompt, self.system_prompt)
+
+        self.assertEqual(results[0]["status"], "error")
+        self.assertEqual(results[0]["duration_seconds"], 0.05)
+        self.assertEqual(
+            results[0]["error_message"],
+            "Request timed out after 0.05 seconds",
+        )
+
+    @patch("app.services.orchestrator.call_claude")
+    @patch("app.services.orchestrator.call_openai")
+    @patch("app.services.orchestrator.call_gemini")
+    async def test_run_workers_internal_timeout_error_caught(
+        self, mock_gemini, mock_openai, mock_claude
+    ):
+        """Verify explicit asyncio.TimeoutError raised from inside provider call is caught."""
+        mock_gemini.side_effect = asyncio.TimeoutError()
+        mock_openai.return_value = self.mock_openai_success
+        mock_claude.return_value = self.mock_claude_success
+
+        results = await run_workers(self.prompt, self.system_prompt, timeout=12)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0]["status"], "error")
+        self.assertEqual(results[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(results[0]["duration_seconds"], 12.0)
+        self.assertEqual(results[0]["tokens"], {"input": 0, "output": 0})
+        self.assertIsNone(results[0]["response_text"])
+        self.assertEqual(results[0]["error_message"], "Request timed out after 12 seconds")
+
 
 if __name__ == "__main__":
     unittest.main()
+
