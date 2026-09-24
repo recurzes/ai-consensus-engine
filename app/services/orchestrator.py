@@ -91,6 +91,7 @@ MODEL_TO_PROVIDER: dict[str, str] = {
     GEMINI_MODEL_NAME: "gemini",
     OPENAI_MODEL_NAME: "openai",
     CLAUDE_MODEL_NAME: "claude",
+    "gemini-3-flash-preview": "gemini",
     "gemini-2.5-flash": "gemini",
     "gpt-4o-mini": "openai",
     "claude-3-5-haiku": "claude",
@@ -173,6 +174,9 @@ def partition_results(
 
 
 __all__ = [
+    "CLAUDE_MODEL_NAME",
+    "GEMINI_MODEL_NAME",
+    "OPENAI_MODEL_NAME",
     "MODEL_TO_PROVIDER",
     "ORDERED_PROVIDERS",
     "partition_results",

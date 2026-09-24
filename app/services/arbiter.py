@@ -20,7 +20,7 @@ from app.services.openai_client import get_openai_client
 logger = logging.getLogger(__name__)
 
 ARBITER_MODELS: dict[str, str] = {
-    "gemini": "gemini-2.5-pro",
+    "gemini": "gemini-3-flash-preview",
     "openai": "gpt-4o",
 }
 

@@ -13,6 +13,10 @@ from typing import Any, Final
 # - Anthropic (claude-3-5-haiku): https://www.anthropic.com/pricing
 
 PRICING: Final[dict[str, dict[str, float]]] = {
+    "gemini-3-flash-preview": {
+        "input_per_million": 0.30,   # USD per 1M input tokens (paid tier)
+        "output_per_million": 2.50,  # USD per 1M output tokens (paid tier)
+    },
     "gemini-2.5-flash": {
         "input_per_million": 0.30,   # USD per 1M input tokens (paid tier)
         "output_per_million": 2.50,  # USD per 1M output tokens (paid tier)
