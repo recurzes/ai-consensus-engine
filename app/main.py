@@ -12,7 +12,7 @@ from app.schemas.models import (
     ProviderResult,
     Telemetry,
 )
-from app.services.arbiter import ArbiterError, synthesize
+from app.services.arbiter import ArbiterError, synthesize, synthesize_single
 from app.services.cost_tracker import calculate_all_costs
 from app.services.orchestrator import (
     MODEL_TO_PROVIDER,
@@ -62,7 +62,10 @@ async def create_consensus(request: ConsensusRequest) -> ConsensusResponse:
       3. Dispatch concurrent worker queries to Gemini, OpenAI, and Claude.
       4. Partition results into successful and failed provider categories.
       5. Calculate and inject estimated token costs for all providers.
-      6. Run Arbiter model to synthesize surviving outputs into consensus.
+      6. Run Arbiter model to synthesize surviving outputs into consensus:
+         - 3 survivors: reconcile 3 responses (normal happy path)
+         - 2 survivors: reconcile 2 responses (graceful degraded path)
+         - 1 survivor: validate/format single response (single-survivor degraded path)
       7. Stop timer and assemble fully populated ConsensusResponse.
     """
     start_time = time.perf_counter()
@@ -123,12 +126,39 @@ async def create_consensus(request: ConsensusRequest) -> ConsensusResponse:
         )
         provider_breakdown[provider_name] = ProviderResult(**res)
 
-    # Step 6: Run arbiter synthesis across successful provider results
-    consensus_answer = await synthesize(
-        original_prompt=request.prompt,
-        context=request.context,
-        successful_results=successful_results,
-    )
+    # Step 6: Branch on surviving providers and synthesize consensus
+    num_successful = len(successful_results)
+    if num_successful >= 2:
+        logger.info(
+            "Arbiter synthesizing from %d successful providers (%s)",
+            num_successful,
+            successful_providers,
+        )
+        consensus_answer = await synthesize(
+            original_prompt=request.prompt,
+            context=request.context,
+            successful_results=successful_results,
+        )
+    elif num_successful == 1:
+        logger.warning(
+            "Degraded consensus: 1 surviving provider (%s). Validating through active persona.",
+            successful_providers[0] if successful_providers else "unknown",
+        )
+        consensus_answer = await synthesize_single(
+            original_prompt=request.prompt,
+            context=request.context,
+            single_result=successful_results[0],
+        )
+    else:
+        logger.error(
+            "All providers failed (%s). No consensus could be generated.",
+            failed_providers,
+        )
+        consensus_answer = await synthesize(
+            original_prompt=request.prompt,
+            context=request.context,
+            successful_results=[],
+        )
 
     # Step 7: Record elapsed time and assemble final response
     total_duration_seconds = round(time.perf_counter() - start_time, 4)
