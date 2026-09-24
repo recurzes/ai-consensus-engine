@@ -295,6 +295,36 @@ class TestConsensusEndpointGracefulDegradation(unittest.TestCase):
         synth_kwargs = mock_synthesize.call_args[1]
         self.assertEqual(len(synth_kwargs["successful_results"]), 2)
 
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_custom_anthropic_api_key_header_passed_to_worker_orchestrator(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Verify custom x-anthropic-api-key header creates custom claude_client for run_workers."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_error,
+        ]
+        mock_synthesize.return_value = "Consensus answer"
+
+        headers = {"x-anthropic-api-key": "sk-intentionally-invalid-for-failover-test"}
+        response = self.client.post(
+            "/api/v1/consensus",
+            json=self.valid_payload,
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_run_workers.assert_awaited_once()
+        _, kwargs = mock_run_workers.call_args
+        self.assertIn("claude_client", kwargs)
+        self.assertIsNotNone(kwargs["claude_client"])
+        self.assertEqual(
+            kwargs["claude_client"].api_key,
+            "sk-intentionally-invalid-for-failover-test",
+        )
+
     @patch("app.main.synthesize_single", new_callable=AsyncMock)
     @patch("app.main.run_workers", new_callable=AsyncMock)
     def test_two_providers_failure_returns_200_and_single_survivor_consensus(

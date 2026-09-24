@@ -301,5 +301,101 @@ class TestDemoScript(unittest.TestCase):
         )
 
 
+    def test_scenario_3_structure_and_schema_validation(self):
+        """Test SCENARIO_3 payload strictly conforms to ConsensusRequest schema."""
+        from app.schemas.models import ConsensusRequest
+
+        req = ConsensusRequest(**run_demo.SCENARIO_3)
+        self.assertIn("BOP", req.prompt)
+        self.assertIn("Montana", req.prompt)
+        self.assertEqual(req.context.role, "underwriter")
+        self.assertEqual(req.context.line_of_business, "commercial_pnc")
+        self.assertEqual(req.context.state, "MT")
+
+    def test_scenario_3_registered_in_scenarios(self):
+        """Test SCENARIO_3 is registered in the SCENARIOS registry list at index 2."""
+        self.assertGreaterEqual(len(run_demo.SCENARIOS), 3)
+        name, payload = run_demo.SCENARIOS[2]
+        self.assertEqual(
+            name, "Scenario 3: Failover Verification (Claude API key corrupted)"
+        )
+        self.assertEqual(payload, run_demo.SCENARIO_3)
+
+    @patch("run_demo.httpx.Client")
+    def test_run_scenario_failover_banner_and_verification(self, mock_client_cls):
+        """Test run_scenario with is_failover=True prints corruption banner and verification block."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "status": "success",
+            "consensus_answer": "BOP provides bundled coverage for Montana small businesses.",
+            "telemetry": {
+                "total_duration_seconds": 2.87,
+                "total_estimated_cost_usd": 0.00098,
+                "successful_providers": ["gemini", "openai"],
+                "failed_providers": ["claude"],
+            },
+        }
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client_cls.return_value.__enter__.return_value = mock_client
+
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            result = run_demo.run_scenario(
+                "Scenario 3: Failover Verification (Claude API key corrupted)",
+                run_demo.SCENARIO_3,
+                headers={"x-anthropic-api-key": "sk-intentionally-invalid-for-failover-test"},
+                is_failover=True,
+            )
+
+        self.assertIsNotNone(result)
+        output = mock_stdout.getvalue()
+        self.assertIn(
+            "[!] Intentionally corrupting ANTHROPIC_API_KEY to simulate provider failure...",
+            output,
+        )
+        self.assertIn("BOP provides bundled coverage", output)
+        self.assertIn("Successful:      [gemini, openai]", output)
+        self.assertIn("Failed:          [claude]", output)
+        self.assertIn(
+            "✓ FAILOVER VERIFIED: App returned a consensus answer despite one provider failure.",
+            output,
+        )
+        self.assertIn("✓ Failed provider: claude", output)
+        self.assertIn("✓ Successful providers: [gemini, openai]", output)
+        self.assertIn(
+            "✓ The application did NOT crash or raise an unhandled exception.", output
+        )
+
+    @patch("run_demo.validate_environment")
+    @patch("run_demo.run_scenario")
+    def test_main_corrupts_and_restores_anthropic_api_key(
+        self, mock_run_scenario, mock_validate
+    ):
+        """Test main corrupts ANTHROPIC_API_KEY during Scenario 3 and restores original key afterwards."""
+        captured_keys: list[str | None] = []
+
+        def side_effect(name, payload, headers=None, is_failover=False):
+            if is_failover:
+                captured_keys.append(os.environ.get("ANTHROPIC_API_KEY"))
+                self.assertEqual(
+                    headers,
+                    {"x-anthropic-api-key": "sk-intentionally-invalid-for-failover-test"},
+                )
+            return {"status": "success"}
+
+        mock_run_scenario.side_effect = side_effect
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "original-real-key"}):
+            run_demo.main()
+            self.assertEqual(os.environ.get("ANTHROPIC_API_KEY"), "original-real-key")
+
+        self.assertEqual(len(captured_keys), 1)
+        self.assertEqual(
+            captured_keys[0], "sk-intentionally-invalid-for-failover-test"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
