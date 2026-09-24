@@ -31,8 +31,10 @@ class TestDemoScript(unittest.TestCase):
         output = run_demo.format_telemetry(telemetry)
         expected = (
             "Telemetry:\n"
-            "  Duration: 3.12s | Cost: $0.00142 | "
-            "Success: [gemini, openai, claude] | Failed: []"
+            "  Total Duration:  3.12s\n"
+            "  Estimated Cost:  $0.00142\n"
+            "  Successful:      [gemini, openai, claude]\n"
+            "  Failed:          []"
         )
         self.assertEqual(output, expected)
 
@@ -47,8 +49,10 @@ class TestDemoScript(unittest.TestCase):
         output = run_demo.format_telemetry(telemetry)
         expected = (
             "Telemetry:\n"
-            "  Duration: 2.50s | Cost: $0.00085 | "
-            "Success: [gemini, openai] | Failed: [claude]"
+            "  Total Duration:  2.50s\n"
+            "  Estimated Cost:  $0.00085\n"
+            "  Successful:      [gemini, openai]\n"
+            "  Failed:          [claude]"
         )
         self.assertEqual(output, expected)
 
@@ -57,8 +61,10 @@ class TestDemoScript(unittest.TestCase):
         output = run_demo.format_telemetry({})
         expected = (
             "Telemetry:\n"
-            "  Duration: 0.00s | Cost: $0.00000 | "
-            "Success: [] | Failed: []"
+            "  Total Duration:  0.00s\n"
+            "  Estimated Cost:  $0.00000\n"
+            "  Successful:      []\n"
+            "  Failed:          []"
         )
         self.assertEqual(output, expected)
 
@@ -142,9 +148,11 @@ class TestDemoScript(unittest.TestCase):
         self.assertEqual(result["consensus_answer"], "This is the synthesized answer.")
         output = mock_stdout.getvalue()
         self.assertIn("Scenario 1: Test", output)
+        self.assertIn("Prompt: Test query", output)
         self.assertIn("Consensus Answer:", output)
         self.assertIn("This is the synthesized answer.", output)
-        self.assertIn("Duration: 1.23s | Cost: $0.00050", output)
+        self.assertIn("Total Duration:  1.23s", output)
+        self.assertIn("Estimated Cost:  $0.00050", output)
 
     @patch("run_demo.httpx.Client")
     def test_run_scenario_connection_error(self, mock_client_cls):
@@ -223,6 +231,35 @@ class TestDemoScript(unittest.TestCase):
             self.assertEqual(mock_run_scenario.call_count, 2)
             mock_run_scenario.assert_any_call("Scenario 1", {"prompt": "q1"})
             mock_run_scenario.assert_any_call("Scenario 2", {"prompt": "q2"})
+
+    def test_scenario_1_structure_and_schema_validation(self):
+        """Test SCENARIO_1 payload strictly conforms to ConsensusRequest schema."""
+        from app.schemas.models import ConsensusRequest
+
+        req = ConsensusRequest(**run_demo.SCENARIO_1)
+        self.assertIn("Ordinance or Law", req.prompt)
+        self.assertEqual(req.context.role, "layman_linguist")
+        self.assertEqual(req.context.line_of_business, "homeowners")
+        self.assertEqual(req.context.state, "MT")
+
+    def test_scenario_1_registered_in_scenarios(self):
+        """Test SCENARIO_1 is registered in the SCENARIOS registry list."""
+        self.assertGreaterEqual(len(run_demo.SCENARIOS), 1)
+        name, payload = run_demo.SCENARIOS[0]
+        self.assertEqual(name, "Scenario 1: Consumer Translation (layman_linguist)")
+        self.assertEqual(payload, run_demo.SCENARIO_1)
+
+    @patch("run_demo.validate_environment")
+    @patch("run_demo.run_scenario")
+    def test_main_executes_scenario_1_by_default(self, mock_run_scenario, mock_validate):
+        """Test main executes SCENARIO_1 by default."""
+        run_demo.main()
+        mock_validate.assert_called_once_with(exit_on_error=True)
+        self.assertGreaterEqual(mock_run_scenario.call_count, 1)
+        mock_run_scenario.assert_any_call(
+            "Scenario 1: Consumer Translation (layman_linguist)",
+            run_demo.SCENARIO_1,
+        )
 
 
 if __name__ == "__main__":
