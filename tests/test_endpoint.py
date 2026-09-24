@@ -186,5 +186,214 @@ class TestConsensusEndpointHappyPath(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
 
+
+class TestConsensusEndpointGracefulDegradation(unittest.TestCase):
+    """Integration and route tests for POST /api/v1/consensus graceful degradation paths."""
+
+    def setUp(self):
+        self.client = TestClient(app)
+        self.valid_payload = {
+            "prompt": "An insured backed a trailer into their garage door. How is this covered?",
+            "context": {
+                "role": "claims_adjuster",
+                "line_of_business": "homeowners",
+                "state": "MT",
+            },
+        }
+
+        self.mock_gemini_success = {
+            "status": "success",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 0.85,
+            "tokens": {"input": 120, "output": 250},
+            "response_text": "The garage door is covered under Section I Dwelling.",
+        }
+        self.mock_openai_success = {
+            "status": "success",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 1.10,
+            "tokens": {"input": 120, "output": 280},
+            "response_text": "Coverage applies to the attached garage door under Dwelling Coverage.",
+        }
+        self.mock_claude_error = {
+            "status": "error",
+            "model": "claude-3-5-haiku",
+            "duration_seconds": 0.25,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Authentication error: invalid API key",
+        }
+        self.mock_openai_error = {
+            "status": "error",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 0.30,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Rate limit exceeded (HTTP 429)",
+        }
+        self.mock_gemini_timeout = {
+            "status": "error",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 12.0,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Request timed out after 12 seconds",
+        }
+
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_one_provider_failure_returns_200_and_consensus(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Verify 1-failure scenario (Claude fails, Gemini & OpenAI succeed) returns HTTP 200."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_error,
+        ]
+        mock_synthesize.return_value = (
+            "Consensus: Damage to the garage door is covered under Section I Dwelling. "
+            "Damage to the trailer requires collision coverage under the auto policy."
+        )
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        # Validate with Pydantic model
+        validated = ConsensusResponse(**data)
+        self.assertEqual(validated.status, "success")
+        self.assertEqual(validated.prompt, self.valid_payload["prompt"])
+        self.assertEqual(validated.consensus_answer, mock_synthesize.return_value)
+
+        # Telemetry assertions
+        telemetry = data["telemetry"]
+        self.assertEqual(
+            telemetry["successful_providers"], ["gemini", "openai"]
+        )
+        self.assertEqual(telemetry["failed_providers"], ["claude"])
+        self.assertGreater(telemetry["total_duration_seconds"], 0.0)
+        self.assertGreater(telemetry["total_estimated_cost_usd"], 0.0)
+
+        # Provider breakdown assertions
+        breakdown = data["provider_breakdown"]
+        self.assertEqual(breakdown["gemini"]["status"], "success")
+        self.assertIsNotNone(breakdown["gemini"]["response_text"])
+        self.assertEqual(breakdown["openai"]["status"], "success")
+        self.assertIsNotNone(breakdown["openai"]["response_text"])
+
+        self.assertEqual(breakdown["claude"]["status"], "error")
+        self.assertIsNone(breakdown["claude"]["response_text"])
+        self.assertEqual(
+            breakdown["claude"]["error_message"],
+            "Authentication error: invalid API key",
+        )
+
+        # Verify synthesize was called with exactly 2 successful results
+        mock_synthesize.assert_awaited_once()
+        synth_kwargs = mock_synthesize.call_args[1]
+        self.assertEqual(len(synth_kwargs["successful_results"]), 2)
+
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_two_providers_failure_returns_200_and_single_survivor_consensus(
+        self, mock_run_workers, mock_synthesize_single
+    ):
+        """Verify 2-failure scenario (OpenAI & Claude fail, Gemini succeeds) calls synthesize_single and returns HTTP 200."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_error,
+            self.mock_claude_error,
+        ]
+        mock_synthesize_single.return_value = (
+            "Refined: Damage to the garage door is covered under Section I Dwelling."
+        )
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        validated = ConsensusResponse(**data)
+        self.assertEqual(validated.status, "success")
+        self.assertEqual(validated.consensus_answer, mock_synthesize_single.return_value)
+
+        # Telemetry assertions
+        telemetry = data["telemetry"]
+        self.assertEqual(telemetry["successful_providers"], ["gemini"])
+        self.assertEqual(telemetry["failed_providers"], ["openai", "claude"])
+
+        # Provider breakdown assertions
+        breakdown = data["provider_breakdown"]
+        self.assertEqual(breakdown["gemini"]["status"], "success")
+        self.assertEqual(breakdown["openai"]["status"], "error")
+        self.assertIsNone(breakdown["openai"]["response_text"])
+        self.assertEqual(breakdown["claude"]["status"], "error")
+        self.assertIsNone(breakdown["claude"]["response_text"])
+
+        # Verify synthesize_single was called with the single survivor
+        mock_synthesize_single.assert_awaited_once()
+        synth_kwargs = mock_synthesize_single.call_args[1]
+        self.assertEqual(
+            synth_kwargs["single_result"]["model"], "gemini-2.5-flash"
+        )
+
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_timeout_and_exception_failures_in_workers(
+        self, mock_run_workers, mock_synthesize_single
+    ):
+        """Verify pipeline handles timeout dicts and unexpected Exceptions without unhandled error."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_timeout,
+            self.mock_openai_success,
+            RuntimeError("Unrecoverable network transport error"),
+        ]
+        mock_synthesize_single.return_value = (
+            "Consensus: Garage door coverage validated under homeowners policy."
+        )
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        telemetry = data["telemetry"]
+        self.assertEqual(telemetry["successful_providers"], ["openai"])
+        self.assertEqual(telemetry["failed_providers"], ["gemini", "claude"])
+
+        breakdown = data["provider_breakdown"]
+        self.assertEqual(breakdown["gemini"]["status"], "error")
+        self.assertIn("timed out", breakdown["gemini"]["error_message"])
+        self.assertEqual(breakdown["claude"]["status"], "error")
+        self.assertIn(
+            "Unrecoverable network transport error",
+            breakdown["claude"]["error_message"],
+        )
+        self.assertEqual(breakdown["openai"]["status"], "success")
+
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_degraded_arbiter_error_returns_502(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Verify ArbiterError during degraded synthesis returns HTTP 502."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_error,
+        ]
+        mock_synthesize.side_effect = ArbiterError("Arbiter service unavailable")
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 502)
+        data = response.json()
+        self.assertEqual(data["status"], "error")
+        self.assertIn("Arbiter synthesis failed", data["message"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
