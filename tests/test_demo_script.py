@@ -261,6 +261,45 @@ class TestDemoScript(unittest.TestCase):
             run_demo.SCENARIO_1,
         )
 
+    def test_scenario_2_structure_and_schema_validation(self):
+        """Test SCENARIO_2 payload strictly conforms to ConsensusRequest schema."""
+        from app.schemas.models import ConsensusRequest
+
+        req = ConsensusRequest(**run_demo.SCENARIO_2)
+        self.assertIn("trailer", req.prompt)
+        self.assertIn("garage door", req.prompt)
+        self.assertEqual(req.context.role, "claims_adjuster")
+        self.assertEqual(req.context.line_of_business, "homeowners")
+        self.assertEqual(req.context.state, "MT")
+
+    def test_scenario_2_registered_in_scenarios(self):
+        """Test SCENARIO_2 is registered in the SCENARIOS registry list at index 1."""
+        self.assertGreaterEqual(len(run_demo.SCENARIOS), 2)
+        name, payload = run_demo.SCENARIOS[1]
+        self.assertEqual(
+            name, "Scenario 2: Underwriting / Coverage Analysis (claims_adjuster, MT)"
+        )
+        self.assertEqual(payload, run_demo.SCENARIO_2)
+
+    @patch("run_demo.validate_environment")
+    @patch("run_demo.run_scenario")
+    def test_main_executes_scenarios_in_order(self, mock_run_scenario, mock_validate):
+        """Test main executes all registered scenarios in sequential order."""
+        run_demo.main()
+        mock_validate.assert_called_once_with(exit_on_error=True)
+        self.assertEqual(mock_run_scenario.call_count, len(run_demo.SCENARIOS))
+
+        expected_calls = [
+            (
+                (name, payload),
+            )
+            for name, payload in run_demo.SCENARIOS
+        ]
+        self.assertEqual(
+            [call.args for call in mock_run_scenario.call_args_list],
+            [args[0] for args in expected_calls],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

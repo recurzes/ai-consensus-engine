@@ -57,7 +57,7 @@ VALID_ARBITER_PROVIDERS = ("gemini", "openai")
 
 # Extensible Scenario Registry:
 # - Scenario 1: Consumer Translation (layman_linguist)
-# - Scenario 2: Underwriting Analysis (strict_underwriter)
+# - Scenario 2: Underwriting Analysis (claims_adjuster, MT)
 # - Scenario 3: Failover Verification
 SCENARIO_1: dict[str, Any] = {
     "prompt": (
@@ -71,8 +71,21 @@ SCENARIO_1: dict[str, Any] = {
     },
 }
 
+SCENARIO_2: dict[str, Any] = {
+    "prompt": (
+        "An insured backed a trailer into their garage door, damaging both the door "
+        "and the trailer. How are these damages covered under the homeowners policy?"
+    ),
+    "context": {
+        "role": "claims_adjuster",
+        "line_of_business": "homeowners",
+        "state": "MT",
+    },
+}
+
 SCENARIOS: list[tuple[str, dict[str, Any]]] = [
     ("Scenario 1: Consumer Translation (layman_linguist)", SCENARIO_1),
+    ("Scenario 2: Underwriting / Coverage Analysis (claims_adjuster, MT)", SCENARIO_2),
 ]
 
 
@@ -278,13 +291,15 @@ def main() -> None:
         print(
             "No demo scenarios registered yet. Scenarios 1-3 will be added in subsequent branches:\n"
             "  - Scenario 1: Consumer Translation (layman_linguist)\n"
-            "  - Scenario 2: Underwriting Analysis (strict_underwriter)\n"
+            "  - Scenario 2: Underwriting Analysis (claims_adjuster, MT)\n"
             "  - Scenario 3: Failover Verification\n"
         )
         print_divider()
         return
 
-    for scenario_name, payload in SCENARIOS:
+    for idx, (scenario_name, payload) in enumerate(SCENARIOS):
+        if idx > 0:
+            print()
         run_scenario(scenario_name, payload)
 
 
