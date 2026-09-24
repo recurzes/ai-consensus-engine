@@ -20,14 +20,52 @@ from app.core.prompts import build_arbiter_prompt
 from app.schemas.models import Context, LOBEnum, RoleEnum
 from app.services.arbiter import (
     ARBITER_MODELS,
+    AllProvidersFailedError,
     ArbiterError,
     build_arbiter_user_message,
     synthesize,
+    synthesize_single,
 )
 
 
 class TestArbiterUserMessage(unittest.TestCase):
     """Unit tests for building user message payloads sent to the Arbiter model."""
+
+    def test_build_user_message_single_result(self):
+        """Verify single survivor formats persona validation prompt matching spec section 4.3."""
+        prompt = "An insured backed a trailer into their garage door. How are these covered?"
+        results = [
+            {"response_text": "The garage door is covered under Section I Dwelling."},
+        ]
+
+        message = build_arbiter_user_message(prompt, results)
+
+        expected = (
+            "Original Query: An insured backed a trailer into their garage door. How are these covered?\n\n"
+            "One model response was received (other providers were unavailable):\n\n"
+            "Model Response:\n"
+            "The garage door is covered under Section I Dwelling.\n\n"
+            "Please validate, complete, and format this response through the lens of the active professional persona."
+        )
+        self.assertEqual(message, expected)
+
+    def test_build_user_message_single_result_whitespace_and_none(self):
+        """Verify single survivor trims whitespace and handles None safely."""
+        prompt = "  Query with padding  \n"
+        results = [{"response_text": None}]
+        message = build_arbiter_user_message(prompt, results)
+        self.assertIn("Original Query: Query with padding", message)
+        self.assertIn("Model Response:\n", message)
+        self.assertIn(
+            "Please validate, complete, and format this response through the lens of the active professional persona.",
+            message,
+        )
+
+    def test_build_user_message_zero_results_raises_error(self):
+        """Verify building message with empty list raises AllProvidersFailedError."""
+        with self.assertRaises(AllProvidersFailedError) as ctx:
+            build_arbiter_user_message("Query", [])
+        self.assertIn("no successful provider results", str(ctx.exception))
 
     def test_build_user_message_two_results(self):
         """Verify user message format when 2 providers successfully returned responses."""
@@ -141,17 +179,35 @@ class TestSynthesizeValidation(unittest.IsolatedAsyncioTestCase):
             state="MT",
         )
 
-    async def test_empty_results_raises_value_error(self):
-        """Verify ValueError is raised when 0 successful results are provided."""
-        with self.assertRaises(ValueError) as ctx:
+    async def test_empty_results_raises_all_providers_failed_error(self):
+        """Verify AllProvidersFailedError is raised when 0 successful results are provided."""
+        with self.assertRaises(AllProvidersFailedError) as ctx:
             await synthesize("Prompt", self.context, [])
-        self.assertIn("requires at least 2 successful provider results", str(ctx.exception))
+        self.assertIn("All AI providers failed", str(ctx.exception))
 
-    async def test_single_result_raises_value_error_in_happy_path(self):
-        """Verify ValueError is raised when only 1 result is provided (degraded path deferred)."""
-        with self.assertRaises(ValueError) as ctx:
-            await synthesize("Prompt", self.context, [{"response_text": "Solo response"}])
-        self.assertIn("requires at least 2 successful provider results", str(ctx.exception))
+    async def test_none_or_non_list_results_raises_all_providers_failed_error(self):
+        """Verify non-list or None results raise AllProvidersFailedError."""
+        with self.assertRaises(AllProvidersFailedError):
+            await synthesize("Prompt", self.context, None)  # type: ignore[arg-type]
+
+    async def test_single_result_accepted_without_error(self):
+        """Verify single result is accepted in degraded path and does not raise ValueError."""
+        mock_client = MagicMock()
+        mock_client.aio = MagicMock()
+        mock_client.aio.models = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client.aio.models.generate_content.return_value = MagicMock(
+            text="Single synthesized response"
+        )
+
+        res = await synthesize(
+            "Prompt",
+            self.context,
+            [{"response_text": "Solo response"}],
+            provider="gemini",
+            client=mock_client,
+        )
+        self.assertEqual(res, "Single synthesized response")
 
     async def test_invalid_provider_raises_value_error(self):
         """Verify ValueError is raised when an unsupported provider is requested."""
@@ -433,6 +489,140 @@ class TestSynthesizeContextHandling(unittest.IsolatedAsyncioTestCase):
         self.assertIn("claims_adjuster", config.system_instruction)
         self.assertIn("homeowners", config.system_instruction)
         self.assertIn("MT", config.system_instruction)
+
+
+class TestSynthesizeDegradedPath(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for single survivor and zero survivor degraded paths."""
+
+    def setUp(self):
+        self.context = Context(
+            role=RoleEnum.claims_adjuster,
+            line_of_business=LOBEnum.homeowners,
+            state="MT",
+        )
+        self.single_result = [
+            {"response_text": "The garage door is covered under Section I Dwelling."}
+        ]
+
+    async def test_gemini_single_survivor_synthesis(self):
+        """Verify Gemini executes single-survivor synthesis with adapted user message."""
+        mock_client = MagicMock()
+        mock_client.aio = MagicMock()
+        mock_client.aio.models = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client.aio.models.generate_content.return_value = MagicMock(
+            text="Refined single response through claims adjuster lens."
+        )
+
+        prompt = "An insured backed a trailer into their garage door. How are these covered?"
+        consensus = await synthesize(
+            original_prompt=prompt,
+            context=self.context,
+            successful_results=self.single_result,
+            provider="gemini",
+            client=mock_client,
+        )
+
+        self.assertEqual(consensus, "Refined single response through claims adjuster lens.")
+        mock_client.aio.models.generate_content.assert_awaited_once()
+
+        call_args = mock_client.aio.models.generate_content.call_args
+        self.assertEqual(call_args.kwargs["model"], "gemini-2.5-pro")
+
+        # Verify single-survivor prompt adaptation
+        user_msg = call_args.kwargs["contents"]
+        self.assertIn("One model response was received (other providers were unavailable):", user_msg)
+        self.assertIn("Model Response:\nThe garage door is covered under Section I Dwelling.", user_msg)
+        self.assertIn("Please validate, complete, and format this response", user_msg)
+        self.assertNotIn("Model 1 Response:", user_msg)
+
+    async def test_openai_single_survivor_synthesis(self):
+        """Verify OpenAI executes single-survivor synthesis with adapted user message."""
+        mock_client = MagicMock()
+        mock_client.chat = MagicMock()
+        mock_client.chat.completions = MagicMock()
+        mock_client.chat.completions.create = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="GPT-4o refined single response."))
+        ]
+        mock_client.chat.completions.create.return_value = mock_response
+
+        prompt = "An insured backed a trailer into their garage door. How are these covered?"
+        consensus = await synthesize(
+            original_prompt=prompt,
+            context=self.context,
+            successful_results=self.single_result,
+            provider="openai",
+            client=mock_client,
+        )
+
+        self.assertEqual(consensus, "GPT-4o refined single response.")
+        mock_client.chat.completions.create.assert_awaited_once()
+
+        call_args = mock_client.chat.completions.create.call_args
+        self.assertEqual(call_args.kwargs["model"], "gpt-4o")
+
+        messages = call_args.kwargs["messages"]
+        user_msg = messages[1]["content"]
+        self.assertIn("One model response was received (other providers were unavailable):", user_msg)
+        self.assertIn("Model Response:\nThe garage door is covered under Section I Dwelling.", user_msg)
+        self.assertNotIn("Model 1 Response:", user_msg)
+
+    async def test_synthesize_single_helper(self):
+        """Verify synthesize_single convenience function works identically to synthesize."""
+        mock_client = MagicMock()
+        mock_client.aio = MagicMock()
+        mock_client.aio.models = MagicMock()
+        mock_client.aio.models.generate_content = AsyncMock()
+        mock_client.aio.models.generate_content.return_value = MagicMock(
+            text="Helper consensus output"
+        )
+
+        prompt = "How are trailer collisions handled?"
+        consensus = await synthesize_single(
+            original_prompt=prompt,
+            context=self.context,
+            single_result=self.single_result[0],
+            provider="gemini",
+            client=mock_client,
+        )
+
+        self.assertEqual(consensus, "Helper consensus output")
+        mock_client.aio.models.generate_content.assert_awaited_once()
+
+    async def test_zero_survivors_short_circuits_without_calling_api(self):
+        """Verify 0 survivors raises AllProvidersFailedError without invoking any LLM API."""
+        mock_gemini_client = MagicMock()
+        mock_gemini_client.aio = MagicMock()
+        mock_gemini_client.aio.models = MagicMock()
+        mock_gemini_client.aio.models.generate_content = AsyncMock()
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat = MagicMock()
+        mock_openai_client.chat.completions = MagicMock()
+        mock_openai_client.chat.completions.create = AsyncMock()
+
+        with self.assertRaises(AllProvidersFailedError):
+            await synthesize(
+                "Prompt",
+                self.context,
+                [],
+                provider="gemini",
+                client=mock_gemini_client,
+            )
+
+        with self.assertRaises(AllProvidersFailedError):
+            await synthesize(
+                "Prompt",
+                self.context,
+                [],
+                provider="openai",
+                client=mock_openai_client,
+            )
+
+        mock_gemini_client.aio.models.generate_content.assert_not_called()
+        mock_openai_client.chat.completions.create.assert_not_called()
 
 
 if __name__ == "__main__":

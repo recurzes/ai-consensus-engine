@@ -29,15 +29,20 @@ class ArbiterError(Exception):
     """Raised when arbiter synthesis fails."""
 
 
+class AllProvidersFailedError(ArbiterError):
+    """Raised when synthesize is called with zero surviving provider results."""
+
+
 def build_arbiter_user_message(
     original_prompt: str,
     successful_results: list[dict[str, Any]],
 ) -> str:
     """Build the user message payload sent to the Arbiter model.
 
-    Formats the original prompt followed by each surviving model's response
-    labeled anonymously (e.g. 'Model 1 Response:', 'Model 2 Response:') to avoid
-    biasing the synthesis toward any specific provider.
+    For multiple surviving responses (2 or 3), formats the original query followed
+    by anonymous numbered model responses to reconcile into consensus.
+    For a single surviving response (degraded path), formats the original query
+    and the single response for persona validation and formatting.
 
     Args:
         original_prompt: The user's original query.
@@ -45,7 +50,28 @@ def build_arbiter_user_message(
 
     Returns:
         Formatted user prompt string for the Arbiter.
+
+    Raises:
+        AllProvidersFailedError: If successful_results is empty or invalid.
     """
+    if not isinstance(successful_results, list) or len(successful_results) == 0:
+        raise AllProvidersFailedError(
+            "Cannot build arbiter user message: no successful provider results."
+        )
+
+    if len(successful_results) == 1:
+        result = successful_results[0]
+        response_text = ""
+        if isinstance(result, dict):
+            response_text = result.get("response_text") or ""
+        blocks = [
+            f"Original Query: {original_prompt.strip()}",
+            "One model response was received (other providers were unavailable):",
+            f"Model Response:\n{response_text.strip()}",
+            "Please validate, complete, and format this response through the lens of the active professional persona.",
+        ]
+        return "\n\n".join(blocks)
+
     blocks = [f"Original Query: {original_prompt.strip()}"]
     for idx, result in enumerate(successful_results, start=1):
         response_text = ""
@@ -122,16 +148,17 @@ async def synthesize(
     provider: str | None = None,
     timeout: int | float | None = None,
 ) -> str:
-    """Synthesize multiple AI provider responses into a single authoritative consensus answer.
+    """Synthesize AI provider responses into a single authoritative consensus answer.
 
-    Happy-path arbiter synthesis reconciling 2 or 3 surviving provider responses.
-    Applies the active insurance persona via build_arbiter_prompt and dispatches
-    to the configured arbiter model provider (Gemini 2.5 Pro or GPT-4o).
+    Reconciles 2 or 3 surviving provider responses into an authoritative consensus,
+    or validates/formats a single surviving response through the active insurance
+    persona in degraded scenarios. Short-circuits with AllProvidersFailedError if
+    zero providers succeeded.
 
     Args:
         original_prompt: The initial insurance query submitted by the user.
         context: Context object specifying role, line of business, and jurisdiction.
-        successful_results: List of successful worker result dictionaries (2 or 3 items).
+        successful_results: List of successful worker result dictionaries (1 to 3 items).
         client: Optional pre-configured client for testing or reuse (genai.Client or AsyncOpenAI).
         provider: Optional provider override ('gemini' or 'openai'). Defaults to settings.arbiter_model_provider.
         timeout: Optional request timeout in seconds. Defaults to settings.request_timeout_seconds.
@@ -140,13 +167,13 @@ async def synthesize(
         The raw synthesized consensus answer string.
 
     Raises:
-        ValueError: If fewer than 2 successful results are provided, or if the provider is unsupported.
+        AllProvidersFailedError: If zero successful provider results are provided.
+        ValueError: If the requested provider is unsupported.
         ArbiterError: If the downstream arbiter LLM call fails.
     """
-    if not isinstance(successful_results, list) or len(successful_results) < 2:
-        count = len(successful_results) if isinstance(successful_results, list) else 0
-        raise ValueError(
-            f"Arbiter happy path requires at least 2 successful provider results, got {count}."
+    if not isinstance(successful_results, list) or len(successful_results) == 0:
+        raise AllProvidersFailedError(
+            "All AI providers failed. No consensus could be generated."
         )
 
     resolved_provider = (
@@ -207,9 +234,45 @@ async def synthesize(
         )
 
 
+async def synthesize_single(
+    original_prompt: str,
+    context: Context,
+    single_result: dict[str, Any],
+    *,
+    client: Any | None = None,
+    provider: str | None = None,
+    timeout: int | float | None = None,
+) -> str:
+    """Synthesize and format a single surviving provider response through the active persona.
+
+    Convenience wrapper around synthesize() for single-survivor degraded scenarios.
+
+    Args:
+        original_prompt: The initial insurance query submitted by the user.
+        context: Context object specifying role, line of business, and jurisdiction.
+        single_result: Successful worker result dictionary for the surviving provider.
+        client: Optional pre-configured client for testing or reuse.
+        provider: Optional provider override ('gemini' or 'openai').
+        timeout: Optional request timeout in seconds.
+
+    Returns:
+        The refined consensus answer string.
+    """
+    return await synthesize(
+        original_prompt=original_prompt,
+        context=context,
+        successful_results=[single_result],
+        client=client,
+        provider=provider,
+        timeout=timeout,
+    )
+
+
 __all__ = [
     "ARBITER_MODELS",
+    "AllProvidersFailedError",
     "ArbiterError",
     "build_arbiter_user_message",
     "synthesize",
+    "synthesize_single",
 ]
