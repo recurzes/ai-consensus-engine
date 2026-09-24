@@ -1,7 +1,150 @@
-from fastapi import FastAPI
+import logging
+import time
+from typing import Any
 
-app = FastAPI()
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+
+from app.core.prompts import build_system_prompt
+from app.schemas.models import (
+    ConsensusRequest,
+    ConsensusResponse,
+    ProviderResult,
+    Telemetry,
+)
+from app.services.arbiter import ArbiterError, synthesize
+from app.services.cost_tracker import calculate_all_costs
+from app.services.orchestrator import (
+    MODEL_TO_PROVIDER,
+    ORDERED_PROVIDERS,
+    partition_results,
+    run_workers,
+)
+
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="AI Consensus Engine",
+    description="Multi-LLM consensus engine with professional insurance personas and arbiter synthesis.",
+    version="1.0.0",
+)
+
+
+@app.exception_handler(ArbiterError)
+async def arbiter_error_handler(request: Request, exc: ArbiterError) -> JSONResponse:
+    """Handle arbiter synthesis errors and return a structured 502 error payload."""
+    logger.error("Arbiter synthesis failed: %s", exc)
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={
+            "status": "error",
+            "message": f"Arbiter synthesis failed: {exc}",
+        },
+    )
+
 
 @app.get("/")
-def index():
+def index() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post(
+    "/api/v1/consensus",
+    response_model=ConsensusResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def create_consensus(request: ConsensusRequest) -> ConsensusResponse:
+    """Execute end-to-end consensus pipeline across multiple LLM providers.
+
+    Pipeline stages:
+      1. Validate incoming request (handled automatically by Pydantic/FastAPI).
+      2. Start pipeline latency timer and build role-specific system prompt.
+      3. Dispatch concurrent worker queries to Gemini, OpenAI, and Claude.
+      4. Partition results into successful and failed provider categories.
+      5. Calculate and inject estimated token costs for all providers.
+      6. Run Arbiter model to synthesize surviving outputs into consensus.
+      7. Stop timer and assemble fully populated ConsensusResponse.
+    """
+    start_time = time.perf_counter()
+
+    # Step 2: Build domain system prompt
+    system_prompt = build_system_prompt(
+        role=request.context.role,
+        line_of_business=request.context.line_of_business,
+        state=request.context.state,
+    )
+
+    # Step 3: Dispatch workers concurrently
+    raw_results = await run_workers(
+        prompt=request.prompt,
+        system_prompt=system_prompt,
+    )
+
+    # Step 4: Partition results into success and failure categories
+    (
+        successful_results,
+        failed_results,
+        successful_providers,
+        failed_providers,
+    ) = partition_results(raw_results)
+
+    # Step 5: Normalize results, calculate costs, and assemble provider breakdown
+    dict_results: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_results):
+        if isinstance(item, dict):
+            dict_results.append(item)
+        else:
+            fallback_provider = (
+                ORDERED_PROVIDERS[idx]
+                if idx < len(ORDERED_PROVIDERS)
+                else f"provider_{idx}"
+            )
+            dict_results.append(
+                {
+                    "status": "error",
+                    "model": fallback_provider,
+                    "duration_seconds": 0.0,
+                    "tokens": {"input": 0, "output": 0},
+                    "response_text": None,
+                    "error_message": str(item),
+                }
+            )
+
+    costed_results, total_estimated_cost = calculate_all_costs(dict_results)
+
+    provider_breakdown: dict[str, ProviderResult] = {}
+    for idx, res in enumerate(costed_results):
+        model = res.get("model")
+        provider_name = MODEL_TO_PROVIDER.get(
+            model,
+            ORDERED_PROVIDERS[idx]
+            if idx < len(ORDERED_PROVIDERS)
+            else f"provider_{idx}",
+        )
+        provider_breakdown[provider_name] = ProviderResult(**res)
+
+    # Step 6: Run arbiter synthesis across successful provider results
+    consensus_answer = await synthesize(
+        original_prompt=request.prompt,
+        context=request.context,
+        successful_results=successful_results,
+    )
+
+    # Step 7: Record elapsed time and assemble final response
+    total_duration_seconds = round(time.perf_counter() - start_time, 4)
+
+    telemetry = Telemetry(
+        total_duration_seconds=total_duration_seconds,
+        total_estimated_cost_usd=total_estimated_cost,
+        successful_providers=successful_providers,
+        failed_providers=failed_providers,
+    )
+
+    return ConsensusResponse(
+        status="success",
+        prompt=request.prompt,
+        applied_context=request.context,
+        consensus_answer=consensus_answer,
+        telemetry=telemetry,
+        provider_breakdown=provider_breakdown,
+    )
