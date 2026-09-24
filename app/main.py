@@ -43,6 +43,19 @@ async def arbiter_error_handler(request: Request, exc: ArbiterError) -> JSONResp
     )
 
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all safety net for unhandled exceptions returning clean JSON 500."""
+    logger.exception("Unhandled exception during request processing: %s", exc)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "status": "error",
+            "message": "An unexpected error occurred.",
+        },
+    )
+
+
 @app.get("/")
 def index() -> dict[str, str]:
     return {"status": "ok"}
@@ -53,7 +66,9 @@ def index() -> dict[str, str]:
     response_model=ConsensusResponse,
     status_code=status.HTTP_200_OK,
 )
-async def create_consensus(request: ConsensusRequest) -> ConsensusResponse:
+async def create_consensus(
+    request: ConsensusRequest,
+) -> ConsensusResponse | JSONResponse:
     """Execute end-to-end consensus pipeline across multiple LLM providers.
 
     Pipeline stages:
@@ -154,10 +169,17 @@ async def create_consensus(request: ConsensusRequest) -> ConsensusResponse:
             "All providers failed (%s). No consensus could be generated.",
             failed_providers,
         )
-        consensus_answer = await synthesize(
-            original_prompt=request.prompt,
-            context=request.context,
-            successful_results=[],
+        failed_providers_detail = {
+            provider_name: (res.error_message or "Unknown provider error")
+            for provider_name, res in provider_breakdown.items()
+        }
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "status": "error",
+                "message": "All AI providers failed. No consensus could be generated.",
+                "failed_providers": failed_providers_detail,
+            },
         )
 
     # Step 7: Record elapsed time and assemble final response
