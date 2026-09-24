@@ -53,12 +53,16 @@ class ProviderResult(BaseModel):
     tokens: dict[str, int]
     response_text: str | None = None
     error_message: str | None = None
+    estimated_cost_usd: float | None = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler, info):
         data = handler(self)
-        if isinstance(data, dict) and data.get("error_message") is None:
-            data.pop("error_message", None)
+        if isinstance(data, dict):
+            if data.get("error_message") is None:
+                data.pop("error_message", None)
+            if data.get("estimated_cost_usd") is None:
+                data.pop("estimated_cost_usd", None)
         return data
 
 
