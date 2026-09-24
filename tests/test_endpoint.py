@@ -482,6 +482,8 @@ class TestConsensusEndpointTotalFailure(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         data = response.json()
         self.assertEqual(data["status"], "error")
+        self.assertNotIn("consensus_answer", data)
+        self.assertIsNone(data.get("consensus_answer"))
         self.assertEqual(
             data["message"],
             "All AI providers failed. No consensus could be generated.",
@@ -601,7 +603,412 @@ class TestConsensusEndpointTotalFailure(unittest.TestCase):
         self.assertEqual(success_response.json()["status"], "success")
 
 
+SPEC_VALID_PAYLOAD = {
+    "prompt": "Explain coverage triggers for a homeowners claim in Montana.",
+    "context": {
+        "role": "claims_adjuster",
+        "line_of_business": "homeowners",
+        "state": "MT",
+    },
+}
+
+
+class TestEndpointIntegrationSpec(unittest.TestCase):
+    """Integration tests for POST /api/v1/consensus corresponding to Phase 9.
+
+    Specification: notes/backend-spec/29-test-endpoint-integration-tests.md
+    Tests the full HTTP layer (status codes, response shape, success, degradation, and failure).
+    All provider calls and arbiter synthesis are mocked at the service layer.
+    """
+
+    def setUp(self):
+        self.client = TestClient(app, raise_server_exceptions=False)
+        self.valid_payload = SPEC_VALID_PAYLOAD
+
+        self.mock_gemini_success = {
+            "status": "success",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 0.85,
+            "tokens": {"input": 120, "output": 250},
+            "response_text": "Montana homeowners coverage triggers upon direct physical loss to covered dwelling.",
+        }
+        self.mock_openai_success = {
+            "status": "success",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 1.10,
+            "tokens": {"input": 120, "output": 280},
+            "response_text": "Coverage applies under Section I Dwelling for accidental physical damage in MT.",
+        }
+        self.mock_claude_success = {
+            "status": "success",
+            "model": "claude-3-5-haiku",
+            "duration_seconds": 1.35,
+            "tokens": {"input": 120, "output": 310},
+            "response_text": "First-party property coverage triggers require fortuitous direct physical loss.",
+        }
+        self.mock_gemini_failure = {
+            "status": "error",
+            "model": "gemini-2.5-flash",
+            "duration_seconds": 0.05,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Gemini quota exceeded (HTTP 429)",
+        }
+        self.mock_openai_failure = {
+            "status": "error",
+            "model": "gpt-4o-mini",
+            "duration_seconds": 0.08,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "OpenAI authentication failed: invalid API key",
+        }
+        self.mock_claude_failure = {
+            "status": "error",
+            "model": "claude-3-5-haiku",
+            "duration_seconds": 0.10,
+            "tokens": {"input": 0, "output": 0},
+            "response_text": None,
+            "error_message": "Claude connection timed out after 12 seconds",
+        }
+
+    # ------------------------------------------------------------------------
+    # Scenario 1: All-success path
+    # ------------------------------------------------------------------------
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_1_all_success_path(self, mock_run_workers, mock_synthesize):
+        """Scenario 1: All 3 providers succeed -> HTTP 200, status success, non-empty answer, 3 successful, 0 failed."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_success,
+        ]
+        canned_consensus = (
+            "Consensus: Homeowners coverage in Montana triggers upon accidental direct physical loss "
+            "to the dwelling under Section I, subject to policy exclusions and deductible."
+        )
+        mock_synthesize.return_value = canned_consensus
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertIsInstance(data["consensus_answer"], str)
+        self.assertGreater(len(data["consensus_answer"]), 0)
+        self.assertEqual(data["consensus_answer"], canned_consensus)
+
+        telemetry = data["telemetry"]
+        self.assertEqual(len(telemetry["successful_providers"]), 3)
+        self.assertEqual(telemetry["successful_providers"], ["gemini", "openai", "claude"])
+        self.assertEqual(telemetry["failed_providers"], [])
+        self.assertEqual(len(telemetry["failed_providers"]), 0)
+
+        # Validate Arbiter was invoked with all 3 successful results
+        mock_synthesize.assert_awaited_once()
+        synth_kwargs = mock_synthesize.call_args[1]
+        self.assertEqual(len(synth_kwargs["successful_results"]), 3)
+
+    # ------------------------------------------------------------------------
+    # Scenario 2: 1-failure path
+    # ------------------------------------------------------------------------
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_2_one_failure_path_claude_fails(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Scenario 2: 2 succeed, 1 fails (Claude fails) -> HTTP 200, consensus populated, 1 failed provider."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_failure,
+        ]
+        canned_consensus = "Consensus from Gemini & OpenAI: Coverage triggers under Dwelling Section I."
+        mock_synthesize.return_value = canned_consensus
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertIsInstance(data["consensus_answer"], str)
+        self.assertGreater(len(data["consensus_answer"]), 0)
+        self.assertEqual(data["consensus_answer"], canned_consensus)
+
+        telemetry = data["telemetry"]
+        self.assertEqual(len(telemetry["successful_providers"]), 2)
+        self.assertEqual(telemetry["successful_providers"], ["gemini", "openai"])
+        self.assertEqual(len(telemetry["failed_providers"]), 1)
+        self.assertEqual(telemetry["failed_providers"], ["claude"])
+
+        mock_synthesize.assert_awaited_once()
+        self.assertEqual(len(mock_synthesize.call_args[1]["successful_results"]), 2)
+
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_2_one_failure_path_openai_fails(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Scenario 2 permutation: OpenAI fails, Gemini & Claude succeed -> HTTP 200, failed has 1 entry."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_failure,
+            self.mock_claude_success,
+        ]
+        mock_synthesize.return_value = "Consensus from Gemini & Claude."
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertTrue(bool(data["consensus_answer"]))
+        self.assertEqual(len(data["telemetry"]["successful_providers"]), 2)
+        self.assertEqual(len(data["telemetry"]["failed_providers"]), 1)
+        self.assertEqual(data["telemetry"]["failed_providers"], ["openai"])
+
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_2_one_failure_path_gemini_fails(
+        self, mock_run_workers, mock_synthesize
+    ):
+        """Scenario 2 permutation: Gemini fails, OpenAI & Claude succeed -> HTTP 200, failed has 1 entry."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_failure,
+            self.mock_openai_success,
+            self.mock_claude_success,
+        ]
+        mock_synthesize.return_value = "Consensus from OpenAI & Claude."
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertTrue(bool(data["consensus_answer"]))
+        self.assertEqual(len(data["telemetry"]["successful_providers"]), 2)
+        self.assertEqual(len(data["telemetry"]["failed_providers"]), 1)
+        self.assertEqual(data["telemetry"]["failed_providers"], ["gemini"])
+
+    # ------------------------------------------------------------------------
+    # Scenario 3: 2-failure path
+    # ------------------------------------------------------------------------
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_3_two_failure_path_gemini_survives(
+        self, mock_run_workers, mock_synthesize_single
+    ):
+        """Scenario 3: 1 succeeds, 2 fail (Gemini survives) -> HTTP 200, consensus populated, 2 failed providers."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_failure,
+            self.mock_claude_failure,
+        ]
+        single_survivor_consensus = (
+            "Refined: Montana homeowners coverage triggers upon direct physical loss to dwelling."
+        )
+        mock_synthesize_single.return_value = single_survivor_consensus
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertIsInstance(data["consensus_answer"], str)
+        self.assertGreater(len(data["consensus_answer"]), 0)
+        self.assertEqual(data["consensus_answer"], single_survivor_consensus)
+
+        telemetry = data["telemetry"]
+        self.assertEqual(len(telemetry["successful_providers"]), 1)
+        self.assertEqual(telemetry["successful_providers"], ["gemini"])
+        self.assertEqual(len(telemetry["failed_providers"]), 2)
+        self.assertEqual(telemetry["failed_providers"], ["openai", "claude"])
+
+        mock_synthesize_single.assert_awaited_once()
+        synth_kwargs = mock_synthesize_single.call_args[1]
+        self.assertEqual(synth_kwargs["single_result"]["model"], "gemini-2.5-flash")
+
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_3_two_failure_path_openai_survives(
+        self, mock_run_workers, mock_synthesize_single
+    ):
+        """Scenario 3 permutation: Only OpenAI succeeds -> HTTP 200, consensus populated, 2 failed providers."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_failure,
+            self.mock_openai_success,
+            self.mock_claude_failure,
+        ]
+        mock_synthesize_single.return_value = "Refined single response from OpenAI."
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertTrue(bool(data["consensus_answer"]))
+        self.assertEqual(len(data["telemetry"]["successful_providers"]), 1)
+        self.assertEqual(telemetry := data["telemetry"]["failed_providers"], ["gemini", "claude"])
+        self.assertEqual(len(telemetry), 2)
+
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_3_two_failure_path_claude_survives(
+        self, mock_run_workers, mock_synthesize_single
+    ):
+        """Scenario 3 permutation: Only Claude succeeds -> HTTP 200, consensus populated, 2 failed providers."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_failure,
+            self.mock_openai_failure,
+            self.mock_claude_success,
+        ]
+        mock_synthesize_single.return_value = "Refined single response from Claude."
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["status"], "success")
+        self.assertTrue(bool(data["consensus_answer"]))
+        self.assertEqual(len(data["telemetry"]["successful_providers"]), 1)
+        self.assertEqual(len(data["telemetry"]["failed_providers"]), 2)
+        self.assertEqual(data["telemetry"]["failed_providers"], ["gemini", "openai"])
+
+    # ------------------------------------------------------------------------
+    # Scenario 4: All-failure path
+    # ------------------------------------------------------------------------
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_scenario_4_all_failure_path(
+        self, mock_run_workers, mock_synthesize, mock_synthesize_single
+    ):
+        """Scenario 4: All 3 fail -> HTTP 502/503, status error, consensus_answer absent/null."""
+        mock_run_workers.return_value = [
+            self.mock_gemini_failure,
+            self.mock_openai_failure,
+            self.mock_claude_failure,
+        ]
+
+        response = self.client.post("/api/v1/consensus", json=self.valid_payload)
+
+        self.assertIn(response.status_code, (502, 503))
+        self.assertEqual(response.status_code, 502)
+
+        data = response.json()
+        self.assertEqual(data["status"], "error")
+        self.assertNotIn("consensus_answer", data)
+        self.assertIsNone(data.get("consensus_answer"))
+        self.assertEqual(
+            data["message"],
+            "All AI providers failed. No consensus could be generated.",
+        )
+        self.assertIn("failed_providers", data)
+        self.assertEqual(len(data["failed_providers"]), 3)
+        self.assertIn("gemini", data["failed_providers"])
+        self.assertIn("openai", data["failed_providers"])
+        self.assertIn("claude", data["failed_providers"])
+
+        # Arbiter must not be called when all workers fail
+        mock_synthesize.assert_not_called()
+        mock_synthesize_single.assert_not_called()
+
+    # ------------------------------------------------------------------------
+    # Scenario 5: Invalid request body
+    # ------------------------------------------------------------------------
+    def test_scenario_5_invalid_request_body_missing_prompt(self):
+        """Scenario 5: Missing prompt field -> HTTP 422 Unprocessable Entity."""
+        invalid_payload = {
+            "context": {
+                "role": "claims_adjuster",
+                "line_of_business": "homeowners",
+                "state": "MT",
+            }
+        }
+        response = self.client.post("/api/v1/consensus", json=invalid_payload)
+        self.assertEqual(response.status_code, 422)
+
+    def test_scenario_5_invalid_request_body_invalid_role_enum(self):
+        """Scenario 5: Invalid role enum value -> HTTP 422 Unprocessable Entity."""
+        invalid_payload = {
+            "prompt": "Explain coverage triggers for homeowners in Montana.",
+            "context": {
+                "role": "not_a_valid_insurance_role",
+                "line_of_business": "homeowners",
+                "state": "MT",
+            },
+        }
+        response = self.client.post("/api/v1/consensus", json=invalid_payload)
+        self.assertEqual(response.status_code, 422)
+
+    def test_scenario_5_invalid_request_body_empty_payload(self):
+        """Scenario 5: Completely empty payload -> HTTP 422 Unprocessable Entity."""
+        response = self.client.post("/api/v1/consensus", json={})
+        self.assertEqual(response.status_code, 422)
+
+    # ------------------------------------------------------------------------
+    # Status Code Matrix Verification
+    # ------------------------------------------------------------------------
+    @patch("app.main.synthesize_single", new_callable=AsyncMock)
+    @patch("app.main.synthesize", new_callable=AsyncMock)
+    @patch("app.main.run_workers", new_callable=AsyncMock)
+    def test_status_code_matrix(
+        self, mock_run_workers, mock_synthesize, mock_synthesize_single
+    ):
+        """Verifies the complete status code matrix from the specification:
+        | Scenario               | Expected HTTP Status |
+        | All 3 providers succeed| 200                  |
+        | 2 of 3 succeed         | 200                  |
+        | 1 of 3 succeeds        | 200                  |
+        | All 3 fail             | 502                  |
+        | Invalid request body   | 422                  |
+        """
+        mock_synthesize.return_value = "Consensus answer"
+        mock_synthesize_single.return_value = "Single survivor answer"
+
+        # 1. All 3 succeed -> 200
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_success,
+        ]
+        r1 = self.client.post("/api/v1/consensus", json=self.valid_payload)
+        self.assertEqual(r1.status_code, 200, "All 3 succeed must return HTTP 200")
+
+        # 2. 2 of 3 succeed -> 200
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_success,
+            self.mock_claude_failure,
+        ]
+        r2 = self.client.post("/api/v1/consensus", json=self.valid_payload)
+        self.assertEqual(r2.status_code, 200, "2 of 3 succeed must return HTTP 200")
+
+        # 3. 1 of 3 succeeds -> 200
+        mock_run_workers.return_value = [
+            self.mock_gemini_success,
+            self.mock_openai_failure,
+            self.mock_claude_failure,
+        ]
+        r3 = self.client.post("/api/v1/consensus", json=self.valid_payload)
+        self.assertEqual(r3.status_code, 200, "1 of 3 succeeds must return HTTP 200")
+
+        # 4. All 3 fail -> 502
+        mock_run_workers.return_value = [
+            self.mock_gemini_failure,
+            self.mock_openai_failure,
+            self.mock_claude_failure,
+        ]
+        r4 = self.client.post("/api/v1/consensus", json=self.valid_payload)
+        self.assertEqual(r4.status_code, 502, "All 3 fail must return HTTP 502")
+
+        # 5. Invalid request body -> 422
+        r5 = self.client.post("/api/v1/consensus", json={"context": {"role": "claims_adjuster"}})
+        self.assertEqual(r5.status_code, 422, "Invalid request body must return HTTP 422")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
