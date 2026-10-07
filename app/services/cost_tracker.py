@@ -6,7 +6,7 @@ updates straightforward.
 
 from typing import Any, Final
 
-# Pricing last verified: October 2026
+# Pricing last verified: September 2026
 # Provider pricing reference documentation:
 # - Google Gemini (gemini-2.5-flash, gemini-2.5-pro): https://ai.google.dev/pricing
 # - OpenAI (gpt-4o-mini, gpt-4o): https://openai.com/pricing
