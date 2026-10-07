@@ -11,7 +11,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "claude-3-5-haiku"
+MODEL_NAME = "claude-haiku-4-5"
 DEFAULT_MAX_TOKENS = 4096
 
 

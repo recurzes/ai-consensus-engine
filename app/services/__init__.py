@@ -1,4 +1,5 @@
 from app.services.arbiter import (
+    ARBITER_FALLBACKS,
     ARBITER_MODELS,
     AllProvidersFailedError,
     ArbiterError,
@@ -10,6 +11,7 @@ from app.services.cost_tracker import PRICING, calculate_all_costs, calculate_co
 from app.services.orchestrator import partition_results, run_workers
 
 __all__ = [
+    "ARBITER_FALLBACKS",
     "ARBITER_MODELS",
     "AllProvidersFailedError",
     "ArbiterError",

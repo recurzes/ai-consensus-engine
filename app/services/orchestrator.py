@@ -94,7 +94,7 @@ MODEL_TO_PROVIDER: dict[str, str] = {
     "gemini-3-flash-preview": "gemini",
     "gemini-2.5-flash": "gemini",
     "gpt-4o-mini": "openai",
-    "claude-3-5-haiku": "claude",
+    "claude-haiku-4-5": "claude",
 }
 
 ORDERED_PROVIDERS: tuple[str, ...] = ("gemini", "openai", "claude")

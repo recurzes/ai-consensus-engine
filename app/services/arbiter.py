@@ -1,12 +1,14 @@
 """Arbiter synthesis service for generating authoritative consensus responses.
 
 Reconciles surviving model responses from worker LLMs into a single consensus
-answer using a configured high-capability model (Gemini 2.5 Pro or GPT-4o).
+answer using a configured high-capability model (Claude Sonnet 5.5, Gemini, or
+GPT-4o). When Claude is the arbiter, GPT-4o is used as the fallback.
 """
 
 import logging
 from typing import Any
 
+from anthropic import AsyncAnthropic
 from google import genai
 from google.genai import types
 from openai import AsyncOpenAI
@@ -14,15 +16,24 @@ from openai import AsyncOpenAI
 from app.config import settings
 from app.core.prompts import build_arbiter_prompt
 from app.schemas.models import Context
+from app.services.claude_client import get_claude_client
 from app.services.gemini_client import get_gemini_client
 from app.services.openai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
 
 ARBITER_MODELS: dict[str, str] = {
+    "claude": "claude-sonnet-5-5",
     "gemini": "gemini-3-flash-preview",
     "openai": "gpt-4o",
 }
+
+# Provider to retry with when the primary arbiter call fails.
+ARBITER_FALLBACKS: dict[str, str] = {
+    "claude": "openai",
+}
+
+CLAUDE_ARBITER_MAX_TOKENS = 16000
 
 
 class ArbiterError(Exception):
@@ -83,6 +94,44 @@ def build_arbiter_user_message(
     return "\n\n".join(blocks)
 
 
+async def _call_claude_arbiter(
+    user_message: str,
+    system_prompt: str,
+    timeout: int | float,
+    client: AsyncAnthropic | None = None,
+) -> str:
+    """Execute arbiter synthesis call against Claude Sonnet 5.5."""
+    model = ARBITER_MODELS["claude"]
+    try:
+        active_client = client if client is not None else get_claude_client()
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": CLAUDE_ARBITER_MAX_TOKENS,
+            "output_config": {"effort": "medium"},
+            "messages": [{"role": "user", "content": user_message}],
+            "timeout": float(timeout),
+        }
+        if system_prompt:
+            create_kwargs["system"] = system_prompt
+
+        response = await active_client.messages.create(**create_kwargs)
+
+        if getattr(response, "stop_reason", None) == "refusal":
+            raise ArbiterError("Claude arbiter declined to synthesize a response.")
+
+        # Thinking blocks precede the answer, so collect only the text blocks.
+        return "".join(
+            block.text
+            for block in (getattr(response, "content", None) or [])
+            if getattr(block, "type", None) == "text"
+        )
+    except ArbiterError:
+        raise
+    except Exception as exc:
+        logger.error("Claude arbiter synthesis call failed: %s", exc)
+        raise ArbiterError(f"Claude arbiter synthesis failed: {exc}") from exc
+
+
 async def _call_gemini_arbiter(
     user_message: str,
     system_prompt: str,
@@ -139,6 +188,13 @@ async def _call_openai_arbiter(
         raise ArbiterError(f"OpenAI arbiter synthesis failed: {exc}") from exc
 
 
+_ARBITER_CALLERS: dict[str, Any] = {
+    "claude": _call_claude_arbiter,
+    "gemini": _call_gemini_arbiter,
+    "openai": _call_openai_arbiter,
+}
+
+
 async def synthesize(
     original_prompt: str,
     context: Context,
@@ -159,8 +215,10 @@ async def synthesize(
         original_prompt: The initial insurance query submitted by the user.
         context: Context object specifying role, line of business, and jurisdiction.
         successful_results: List of successful worker result dictionaries (1 to 3 items).
-        client: Optional pre-configured client for testing or reuse (genai.Client or AsyncOpenAI).
-        provider: Optional provider override ('gemini' or 'openai'). Defaults to settings.arbiter_model_provider.
+        client: Optional pre-configured client for the primary provider, for testing or reuse
+            (AsyncAnthropic, genai.Client, or AsyncOpenAI).
+        provider: Optional provider override ('claude', 'gemini', or 'openai'). Defaults to
+            settings.arbiter_model_provider. A failed 'claude' call falls back to 'openai'.
         timeout: Optional request timeout in seconds. Defaults to settings.request_timeout_seconds.
 
     Returns:
@@ -169,7 +227,7 @@ async def synthesize(
     Raises:
         AllProvidersFailedError: If zero successful provider results are provided.
         ValueError: If the requested provider is unsupported.
-        ArbiterError: If the downstream arbiter LLM call fails.
+        ArbiterError: If the downstream arbiter LLM call (and its fallback, if any) fails.
     """
     if not isinstance(successful_results, list) or len(successful_results) == 0:
         raise AllProvidersFailedError(
@@ -220,19 +278,30 @@ async def synthesize(
         successful_results=successful_results,
     )
 
-    if resolved_provider == "gemini":
-        return await _call_gemini_arbiter(
+    try:
+        return await _ARBITER_CALLERS[resolved_provider](
             user_message=arbiter_user_message,
             system_prompt=arbiter_system_prompt,
             timeout=effective_timeout,
             client=client,
         )
-    else:  # "openai"
-        return await _call_openai_arbiter(
+    except ArbiterError as exc:
+        fallback_provider = ARBITER_FALLBACKS.get(resolved_provider)
+        if fallback_provider is None:
+            raise
+        logger.warning(
+            "Arbiter %s (%s) failed: %s. Falling back to %s (%s).",
+            resolved_provider,
+            ARBITER_MODELS[resolved_provider],
+            exc,
+            fallback_provider,
+            ARBITER_MODELS[fallback_provider],
+        )
+        # The injected client belongs to the primary provider; the fallback builds its own.
+        return await _ARBITER_CALLERS[fallback_provider](
             user_message=arbiter_user_message,
             system_prompt=arbiter_system_prompt,
             timeout=effective_timeout,
-            client=client,
         )
 
 
@@ -254,7 +323,7 @@ async def synthesize_single(
         context: Context object specifying role, line of business, and jurisdiction.
         single_result: Successful worker result dictionary for the surviving provider.
         client: Optional pre-configured client for testing or reuse.
-        provider: Optional provider override ('gemini' or 'openai').
+        provider: Optional provider override ('claude', 'gemini', or 'openai').
         timeout: Optional request timeout in seconds.
 
     Returns:
@@ -271,6 +340,7 @@ async def synthesize_single(
 
 
 __all__ = [
+    "ARBITER_FALLBACKS",
     "ARBITER_MODELS",
     "AllProvidersFailedError",
     "ArbiterError",

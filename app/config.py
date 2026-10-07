@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     anthropic_workspace_id: str | None = Field(
         default=None, description="Optional Anthropic Workspace ID header (for unscoped keys)"
     )
-    arbiter_model_provider: Literal["gemini", "openai"] = Field(
-        ..., description="Arbiter model provider ('gemini' or 'openai')"
+    arbiter_model_provider: Literal["claude", "gemini", "openai"] = Field(
+        ..., description="Arbiter model provider ('claude', 'gemini', or 'openai')"
     )
     request_timeout_seconds: int = Field(
         default=12, gt=0, description="Per-worker request timeout in seconds"

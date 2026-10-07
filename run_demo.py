@@ -64,7 +64,7 @@ REQUIRED_ENV_VARS = (
     "ARBITER_MODEL_PROVIDER",
 )
 
-VALID_ARBITER_PROVIDERS = ("gemini", "openai")
+VALID_ARBITER_PROVIDERS = ("claude", "gemini", "openai")
 
 # Extensible Scenario Registry:
 # - Scenario 1: Consumer Translation (layman_linguist)
