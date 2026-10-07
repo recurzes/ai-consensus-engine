@@ -14,9 +14,9 @@ The system implements a **Worker Fan-Out $\to$ Arbiter Synthesis** pattern:
 2. **Worker Fan-Out**: FastAPI builds role-tailored system prompts and dispatches requests concurrently across three worker models using `asyncio.gather(..., return_exceptions=True)`:
    - **Google Gemini Worker**: `gemini-2.5-flash` via `google-genai`
    - **OpenAI Worker**: `gpt-4o-mini` via `openai`
-   - **Anthropic Claude Worker**: `claude-3-5-haiku` via `anthropic`
+   - **Anthropic Claude Worker**: `claude-haiku-4-5` via `anthropic`
 3. **Timeout & Failure Isolation**: Each worker call is guarded by an individual timeout (`REQUEST_TIMEOUT_SECONDS`). If any provider times out, encounters a rate limit (HTTP 429), or fails authentication, the failure is captured in telemetry without failing the overall request.
-4. **Arbiter Synthesis**: The surviving provider answers are fed to the Arbiter model (configurable: `gemini-2.5-pro` or `gpt-4o`). The Arbiter validates coverage triggers, reconciles disagreements, eliminates hallucinations, and generates a unified consensus answer.
+4. **Arbiter Synthesis**: The surviving provider answers are fed to the Arbiter model (`claude-sonnet-5-5`, with `gpt-4o` as automatic fallback; `gemini` and `openai` are also selectable). The Arbiter validates coverage triggers, reconciles disagreements, eliminates hallucinations, and generates a unified consensus answer.
 5. **Telemetry & Cost Tracking**: Accurate duration, token counts (input/output), and USD costs are calculated per provider and returned in the response payload.
 
 ```text
@@ -35,7 +35,7 @@ User Request
              │ surviving responses
              ▼
         ┌─────────┐
-        │ Arbiter │ (Gemini 2.5 Pro or GPT-4o)
+        │ Arbiter │ (Claude Sonnet 5.5, GPT-4o fallback)
         └────┬────┘
              ▼
       ConsensusResponse
@@ -91,8 +91,8 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 # Optional: Set only if your Anthropic key requires an organization/workspace header
 # ANTHROPIC_WORKSPACE_ID=wrkspc_your_workspace_id_here
 
-# Arbiter Model Provider ('gemini' for gemini-2.5-pro or 'openai' for gpt-4o)
-ARBITER_MODEL_PROVIDER=gemini
+# Arbiter Model Provider: 'claude' (claude-sonnet-5-5, falls back to gpt-4o), 'gemini', or 'openai' (gpt-4o)
+ARBITER_MODEL_PROVIDER=claude
 
 # Per-worker request timeout budget in seconds (default: 12)
 REQUEST_TIMEOUT_SECONDS=12
@@ -152,7 +152,7 @@ curl -X POST http://localhost:8000/api/v1/consensus \
     },
     {
       "provider": "claude",
-      "model": "claude-3-5-haiku",
+      "model": "claude-haiku-4-5",
       "status": "success",
       "duration_seconds": 1.68,
       "tokens": { "input": 135, "output": 204 },

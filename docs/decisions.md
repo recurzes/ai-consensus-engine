@@ -24,7 +24,7 @@ Key architectural requirements include:
 2. **Deterministic Token & Duration Telemetry:** Capturing exact input and output token counts and execution duration for pricing calculation (Phase 4).
 3. **Robust Error Normalization:** Identifying and normalizing rate limits (HTTP 429), authentication errors, client timeouts, and network failures into a uniform failure shape without crashing workers.
 4. **Mockability & Unit Testing:** Isolating each provider client with reliable unit test fixtures in Phase 5.
-5. **Support for Target Models:** First-class support for `gemini-2.5-flash`, `gpt-4o-mini`, `claude-3-5-haiku`, `gemini-2.5-pro`, and `gpt-4o`.
+5. **Support for Target Models:** First-class support for `gemini-2.5-flash`, `gpt-4o-mini`, `claude-haiku-4-5`, `gemini-2.5-pro`, and `gpt-4o`.
 
 ---
 
@@ -53,7 +53,7 @@ Use `litellm` as a single gateway for calling all providers through an OpenAI-co
 - **Cons:**
   - **Abstraction Leakage & Version Drift:** Error mapping, usage schemas, and parameter translation depend on `litellm`'s internal mapping logic, which can introduce subtle bugs or mismatches when upstream provider APIs change.
   - **Dependency Bloat:** Pulls in dozens of transitive dependencies that increase image size and heighten risk of version conflicts with FastAPI and Pydantic v2.
-  - **Model Identifier Mapping Overhead:** Requires verifying that newer model identifiers (e.g. `gemini-2.5-flash`, `claude-3-5-haiku`) and their pricing/usage objects are fully supported and mapped identically in litellm.
+  - **Model Identifier Mapping Overhead:** Requires verifying that newer model identifiers (e.g. `gemini-2.5-flash`, `claude-haiku-4-5`) and their pricing/usage objects are fully supported and mapped identically in litellm.
   - **Complex Error Normalization:** Catching and distinguishing genuine upstream provider HTTP 429s, credential errors, and timeouts becomes coupled to litellm's custom exception hierarchy.
 
 ---
