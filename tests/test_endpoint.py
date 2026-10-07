@@ -49,7 +49,7 @@ class TestConsensusEndpointHappyPath(unittest.TestCase):
         }
         self.mock_claude_success = {
             "status": "success",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 1.35,
             "tokens": {"input": 120, "output": 310},
             "response_text": "First-party property coverage applies under homeowners terms.",
@@ -217,7 +217,7 @@ class TestConsensusEndpointGracefulDegradation(unittest.TestCase):
         }
         self.mock_claude_error = {
             "status": "error",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.25,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,
@@ -457,7 +457,7 @@ class TestConsensusEndpointTotalFailure(unittest.TestCase):
         }
         self.mock_claude_error = {
             "status": "error",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.25,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,
@@ -591,7 +591,7 @@ class TestConsensusEndpointTotalFailure(unittest.TestCase):
             },
             {
                 "status": "success",
-                "model": "claude-3-5-haiku",
+                "model": "claude-haiku-4-5",
                 "duration_seconds": 1.0,
                 "tokens": {"input": 100, "output": 200},
                 "response_text": "Covered under Dwelling A.",
@@ -641,7 +641,7 @@ class TestEndpointIntegrationSpec(unittest.TestCase):
         }
         self.mock_claude_success = {
             "status": "success",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 1.35,
             "tokens": {"input": 120, "output": 310},
             "response_text": "First-party property coverage triggers require fortuitous direct physical loss.",
@@ -664,7 +664,7 @@ class TestEndpointIntegrationSpec(unittest.TestCase):
         }
         self.mock_claude_failure = {
             "status": "error",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.10,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,

@@ -59,7 +59,7 @@ class TestClaudeClient(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["model"], MODEL_NAME)
-        self.assertEqual(result["model"], "claude-3-5-haiku")
+        self.assertEqual(result["model"], "claude-haiku-4-5")
         self.assertEqual(
             result["response_text"],
             "This is a comprehensive Claude response.",
@@ -72,7 +72,7 @@ class TestClaudeClient(unittest.IsolatedAsyncioTestCase):
         # Validate that ProviderResult validates the returned dict
         provider_result = ProviderResult.model_validate(result)
         self.assertEqual(provider_result.status, "success")
-        self.assertEqual(provider_result.model, "claude-3-5-haiku")
+        self.assertEqual(provider_result.model, "claude-haiku-4-5")
         self.assertEqual(provider_result.tokens["input"], 48)
         self.assertEqual(provider_result.tokens["output"], 135)
         self.assertEqual(
@@ -97,7 +97,7 @@ class TestClaudeClient(unittest.IsolatedAsyncioTestCase):
 
         self.mock_client.messages.create.assert_awaited_once()
         _, kwargs = self.mock_client.messages.create.call_args
-        self.assertEqual(kwargs["model"], "claude-3-5-haiku")
+        self.assertEqual(kwargs["model"], "claude-haiku-4-5")
         self.assertEqual(kwargs["max_tokens"], DEFAULT_MAX_TOKENS)
         self.assertEqual(kwargs["max_tokens"], 4096)
         self.assertEqual(kwargs["timeout"], 15.0)
@@ -146,7 +146,7 @@ class TestClaudeClient(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result["status"], "error")
-        self.assertEqual(result["model"], "claude-3-5-haiku")
+        self.assertEqual(result["model"], "claude-haiku-4-5")
         self.assertIsNone(result["response_text"])
         self.assertEqual(result["tokens"], {"input": 0, "output": 0})
         self.assertIsInstance(result["duration_seconds"], float)

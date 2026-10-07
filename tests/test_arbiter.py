@@ -19,6 +19,7 @@ from app.config import settings
 from app.core.prompts import build_arbiter_prompt
 from app.schemas.models import Context, LOBEnum, RoleEnum
 from app.services.arbiter import (
+    ARBITER_FALLBACKS,
     ARBITER_MODELS,
     AllProvidersFailedError,
     ArbiterError,
@@ -124,7 +125,7 @@ class TestArbiterUserMessage(unittest.TestCase):
             },
             {
                 "provider": "claude",
-                "model": "claude-3-5-haiku",
+                "model": "claude-haiku-4-5",
                 "response_text": "Claude text",
             },
         ]
@@ -137,7 +138,7 @@ class TestArbiterUserMessage(unittest.TestCase):
         self.assertNotIn("Claude Response:", message)
         self.assertNotIn("gemini-2.5-flash:", message)
         self.assertNotIn("gpt-4o-mini:", message)
-        self.assertNotIn("claude-3-5-haiku:", message)
+        self.assertNotIn("claude-haiku-4-5:", message)
 
         self.assertIn("Model 1 Response:\nGemini text", message)
         self.assertIn("Model 2 Response:\nOpenAI text", message)
@@ -368,6 +369,130 @@ class TestSynthesizeOpenAI(unittest.IsolatedAsyncioTestCase):
                 provider="openai",
                 client=self.mock_client,
             )
+        self.assertIn("OpenAI arbiter synthesis failed", str(ctx.exception))
+
+
+class TestSynthesizeClaude(unittest.IsolatedAsyncioTestCase):
+    """Unit tests for Arbiter synthesis using Claude Sonnet 5.5 with GPT-4o fallback."""
+
+    def setUp(self):
+        self.mock_client = MagicMock()
+        self.mock_client.messages = MagicMock()
+        self.mock_client.messages.create = AsyncMock()
+
+        self.mock_openai_client = MagicMock()
+        self.mock_openai_client.chat.completions.create = AsyncMock()
+        mock_choice = MagicMock()
+        mock_choice.message = MagicMock(content="Fallback consensus from GPT-4o.")
+        self.mock_openai_client.chat.completions.create.return_value = MagicMock(
+            choices=[mock_choice]
+        )
+
+        self.context = Context(
+            role=RoleEnum.underwriter,
+            line_of_business=LOBEnum.personal_auto,
+            state="MT",
+        )
+        self.results = [
+            {"response_text": "Model 1 says bodily injury limit is 25/50 in MT."},
+            {"response_text": "Model 2 confirms statutory minimums 25/50/20 in MT."},
+        ]
+
+    async def test_claude_synthesis_success(self):
+        """Verify successful Claude call returns text blocks only and skips the fallback."""
+        thinking_block = MagicMock(type="thinking")
+        text_block = MagicMock(type="text", text="Consensus: MT minimum limits are 25/50/20.")
+        self.mock_client.messages.create.return_value = MagicMock(
+            stop_reason="end_turn", content=[thinking_block, text_block]
+        )
+
+        prompt = "What are the required auto liability limits in Montana?"
+        with patch("app.services.arbiter.get_openai_client") as mock_get_openai:
+            consensus = await synthesize(
+                original_prompt=prompt,
+                context=self.context,
+                successful_results=self.results,
+                provider="claude",
+                client=self.mock_client,
+            )
+            mock_get_openai.assert_not_called()
+
+        self.assertEqual(consensus, "Consensus: MT minimum limits are 25/50/20.")
+        self.mock_client.messages.create.assert_awaited_once()
+
+        call_args = self.mock_client.messages.create.call_args
+        self.assertEqual(call_args.kwargs["model"], ARBITER_MODELS["claude"])
+        self.assertEqual(call_args.kwargs["model"], "claude-sonnet-5-5")
+        self.assertEqual(
+            call_args.kwargs["system"],
+            build_arbiter_prompt(
+                role=self.context.role,
+                line_of_business=self.context.line_of_business,
+                state=self.context.state,
+            ),
+        )
+        self.assertEqual(
+            call_args.kwargs["messages"],
+            [{"role": "user", "content": build_arbiter_user_message(prompt, self.results)}],
+        )
+
+    async def test_claude_failure_falls_back_to_gpt_4o(self):
+        """Verify a failed Claude call is retried against GPT-4o."""
+        self.assertEqual(ARBITER_FALLBACKS["claude"], "openai")
+        self.mock_client.messages.create.side_effect = RuntimeError("503 Overloaded")
+
+        with patch(
+            "app.services.arbiter.get_openai_client", return_value=self.mock_openai_client
+        ):
+            consensus = await synthesize(
+                original_prompt="Query",
+                context=self.context,
+                successful_results=self.results,
+                provider="claude",
+                client=self.mock_client,
+            )
+
+        self.assertEqual(consensus, "Fallback consensus from GPT-4o.")
+        call_args = self.mock_openai_client.chat.completions.create.call_args
+        self.assertEqual(call_args.kwargs["model"], "gpt-4o")
+
+    async def test_claude_refusal_falls_back_to_gpt_4o(self):
+        """Verify a Claude refusal stop reason triggers the GPT-4o fallback."""
+        self.mock_client.messages.create.return_value = MagicMock(
+            stop_reason="refusal", content=[]
+        )
+
+        with patch(
+            "app.services.arbiter.get_openai_client", return_value=self.mock_openai_client
+        ):
+            consensus = await synthesize(
+                original_prompt="Query",
+                context=self.context,
+                successful_results=self.results,
+                provider="claude",
+                client=self.mock_client,
+            )
+
+        self.assertEqual(consensus, "Fallback consensus from GPT-4o.")
+
+    async def test_claude_and_fallback_failure_raises_arbiter_error(self):
+        """Verify ArbiterError is raised when both Claude and the GPT-4o fallback fail."""
+        self.mock_client.messages.create.side_effect = RuntimeError("503 Overloaded")
+        self.mock_openai_client.chat.completions.create.side_effect = RuntimeError(
+            "Rate limit exceeded (HTTP 429)"
+        )
+
+        with patch(
+            "app.services.arbiter.get_openai_client", return_value=self.mock_openai_client
+        ):
+            with self.assertRaises(ArbiterError) as ctx:
+                await synthesize(
+                    original_prompt="Query",
+                    context=self.context,
+                    successful_results=self.results,
+                    provider="claude",
+                    client=self.mock_client,
+                )
         self.assertIn("OpenAI arbiter synthesis failed", str(ctx.exception))
 
 

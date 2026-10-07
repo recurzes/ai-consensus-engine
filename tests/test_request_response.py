@@ -102,7 +102,7 @@ class TestRequestResponseModels(unittest.TestCase):
         """Verify ProviderResult handles failure shape with null response_text and error_message."""
         error_dict = {
             "status": "error",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 1.82,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,
@@ -110,7 +110,7 @@ class TestRequestResponseModels(unittest.TestCase):
         }
         result = ProviderResult(**error_dict)
         self.assertEqual(result.status, "error")
-        self.assertEqual(result.model, "claude-3-5-haiku")
+        self.assertEqual(result.model, "claude-haiku-4-5")
         self.assertEqual(result.duration_seconds, 1.82)
         self.assertEqual(result.tokens, {"input": 0, "output": 0})
         self.assertIsNone(result.response_text)
@@ -216,7 +216,7 @@ class TestRequestResponseModels(unittest.TestCase):
                 },
                 "claude": {
                     "status": "success",
-                    "model": "claude-3-5-haiku",
+                    "model": "claude-haiku-4-5",
                     "duration_seconds": 1.82,
                     "tokens": {"input": 85, "output": 245},
                     "response_text": "First-party property coverage applies...",
@@ -261,7 +261,7 @@ class TestRequestResponseModels(unittest.TestCase):
                 },
                 "claude": {
                     "status": "error",
-                    "model": "claude-3-5-haiku",
+                    "model": "claude-haiku-4-5",
                     "duration_seconds": 0.05,
                     "tokens": {"input": 0, "output": 0},
                     "response_text": None,

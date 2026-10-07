@@ -19,7 +19,7 @@ class TestCostTrackerPricingTable(unittest.TestCase):
     EXPECTED_MODELS = {
         "gemini-2.5-flash",
         "gpt-4o-mini",
-        "claude-3-5-haiku",
+        "claude-haiku-4-5",
         "gemini-2.5-pro",
         "gpt-4o",
     }
@@ -33,9 +33,9 @@ class TestCostTrackerPricingTable(unittest.TestCase):
             "input_per_million": 0.15,
             "output_per_million": 0.60,
         },
-        "claude-3-5-haiku": {
-            "input_per_million": 0.80,
-            "output_per_million": 4.00,
+        "claude-haiku-4-5": {
+            "input_per_million": 1.00,
+            "output_per_million": 5.00,
         },
         "gemini-2.5-pro": {
             "input_per_million": 1.25,
@@ -146,8 +146,8 @@ class TestCostTrackerCalculation(unittest.TestCase):
         test_cases = [
             # gpt-4o-mini: input 0.15, output 0.60 per 1M
             ("gpt-4o-mini", 1000, 2000, round((1000 / 1e6 * 0.15) + (2000 / 1e6 * 0.60), 6)),
-            # claude-3-5-haiku: input 0.80, output 4.00 per 1M
-            ("claude-3-5-haiku", 500, 500, round((500 / 1e6 * 0.80) + (500 / 1e6 * 4.00), 6)),
+            # claude-haiku-4-5: input 1.00, output 5.00 per 1M
+            ("claude-haiku-4-5", 500, 500, round((500 / 1e6 * 1.00) + (500 / 1e6 * 5.00), 6)),
             # gemini-2.5-pro: input 1.25, output 10.00 per 1M
             ("gemini-2.5-pro", 1000, 1000, round((1000 / 1e6 * 1.25) + (1000 / 1e6 * 10.00), 6)),
             # gpt-4o: input 2.50, output 10.00 per 1M
@@ -213,7 +213,7 @@ class TestCostTrackerCalculation(unittest.TestCase):
             },
             {
                 "status": "success",
-                "model": "claude-3-5-haiku",
+                "model": "claude-haiku-4-5",
                 "duration_seconds": 1.82,
                 "tokens": {"input": 85, "output": 245},
                 "response_text": "Claude response text",
@@ -222,7 +222,7 @@ class TestCostTrackerCalculation(unittest.TestCase):
 
         expected_gemini_cost = calculate_cost("gemini-2.5-flash", 85, 210)
         expected_openai_cost = calculate_cost("gpt-4o-mini", 85, 230)
-        expected_claude_cost = calculate_cost("claude-3-5-haiku", 85, 245)
+        expected_claude_cost = calculate_cost("claude-haiku-4-5", 85, 245)
         expected_total = round(
             expected_gemini_cost + expected_openai_cost + expected_claude_cost, 6
         )
@@ -263,7 +263,7 @@ class TestCostTrackerCalculation(unittest.TestCase):
             },
             {
                 "status": "error",
-                "model": "claude-3-5-haiku",
+                "model": "claude-haiku-4-5",
                 "duration_seconds": 0.05,
                 "tokens": {"input": 0, "output": 0},
                 "response_text": None,
@@ -301,7 +301,7 @@ class TestCostTrackerCalculation(unittest.TestCase):
             },
             {
                 "status": "error",
-                "model": "claude-3-5-haiku",
+                "model": "claude-haiku-4-5",
                 "duration_seconds": 0.05,
                 "tokens": {"input": 0, "output": 0},
                 "response_text": None,
@@ -333,7 +333,7 @@ class TestCostTrackerCalculation(unittest.TestCase):
             },
             {
                 "status": "error",
-                "model": "claude-3-5-haiku",
+                "model": "claude-haiku-4-5",
                 "duration_seconds": 1.82,
                 "tokens": {"input": 0, "output": 0},
                 "response_text": None,

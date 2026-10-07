@@ -106,7 +106,7 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(s_openai.arbiter_model_provider, "openai")
 
         # Invalid provider values should fail loudly
-        for invalid_provider in ["claude", "mistral", "llama", ""]:
+        for invalid_provider in ["anthropic", "mistral", "llama", ""]:
             with self.subTest(provider=invalid_provider):
                 with patch.dict(os.environ, {}, clear=True):
                     with self.assertRaises(ValidationError):

@@ -371,7 +371,7 @@ async def test_claude_client_success():
 
     assert result["status"] == "success"
     assert result["model"] == CLAUDE_MODEL_NAME
-    assert result["model"] == "claude-3-5-haiku"
+    assert result["model"] == "claude-haiku-4-5"
     assert result["response_text"] == "Claude coverage analysis: Replacement cost applies up to limit."
     assert result["tokens"]["input"] == 52
     assert result["tokens"]["output"] == 142

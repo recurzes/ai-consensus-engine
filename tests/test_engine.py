@@ -48,7 +48,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         }
         self.mock_claude_success = {
             "status": "success",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.22,
             "tokens": {"input": 14, "output": 28},
             "response_text": "Claude response text",
@@ -73,7 +73,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         # Ordering guarantee: [gemini, openai, claude]
         self.assertEqual(results[0]["model"], GEMINI_MODEL_NAME)
         self.assertEqual(results[1]["model"], "gpt-4o-mini")
-        self.assertEqual(results[2]["model"], "claude-3-5-haiku")
+        self.assertEqual(results[2]["model"], "claude-haiku-4-5")
 
         # Conforms to ProviderResult schema
         for res in results:
@@ -137,7 +137,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
 
         # Claude succeeded
         self.assertEqual(results[2]["status"], "success")
-        self.assertEqual(results[2]["model"], "claude-3-5-haiku")
+        self.assertEqual(results[2]["model"], "claude-haiku-4-5")
 
     @patch("app.services.orchestrator.call_claude")
     @patch("app.services.orchestrator.call_openai")
@@ -150,7 +150,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         mock_openai.return_value = self.mock_openai_success
         mock_claude.return_value = {
             "status": "error",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.05,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,
@@ -269,7 +269,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
 
         # Claude succeeded
         self.assertEqual(results[2]["status"], "success")
-        self.assertEqual(results[2]["model"], "claude-3-5-haiku")
+        self.assertEqual(results[2]["model"], "claude-haiku-4-5")
 
         # Conforms to ProviderResult schema
         for res in results:
@@ -293,7 +293,7 @@ class TestWorkerOrchestration(unittest.IsolatedAsyncioTestCase):
         results = await run_workers(self.prompt, self.system_prompt, timeout=0.05)
 
         self.assertEqual(len(results), 3)
-        expected_models = [GEMINI_MODEL_NAME, "gpt-4o-mini", "claude-3-5-haiku"]
+        expected_models = [GEMINI_MODEL_NAME, "gpt-4o-mini", "claude-haiku-4-5"]
         for res, expected_model in zip(results, expected_models):
             self.assertEqual(res["status"], "error")
             self.assertEqual(res["model"], expected_model)
@@ -401,7 +401,7 @@ class TestPartitionResults(unittest.TestCase):
         }
         self.claude_success = {
             "status": "success",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.22,
             "tokens": {"input": 14, "output": 28},
             "response_text": "Claude response text",
@@ -424,7 +424,7 @@ class TestPartitionResults(unittest.TestCase):
         }
         self.claude_error = {
             "status": "error",
-            "model": "claude-3-5-haiku",
+            "model": "claude-haiku-4-5",
             "duration_seconds": 0.05,
             "tokens": {"input": 0, "output": 0},
             "response_text": None,
@@ -436,7 +436,7 @@ class TestPartitionResults(unittest.TestCase):
         self.assertEqual(MODEL_TO_PROVIDER["gemini-2.5-flash"], "gemini")
         self.assertEqual(MODEL_TO_PROVIDER[GEMINI_MODEL_NAME], "gemini")
         self.assertEqual(MODEL_TO_PROVIDER["gpt-4o-mini"], "openai")
-        self.assertEqual(MODEL_TO_PROVIDER["claude-3-5-haiku"], "claude")
+        self.assertEqual(MODEL_TO_PROVIDER["claude-haiku-4-5"], "claude")
 
     def test_partition_results_all_success(self):
         """Given 3 success results: successful_providers has 3, failed_providers is empty."""
